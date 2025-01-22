@@ -1,0 +1,3 @@
+orange: shared Serial Clock
+yellow: Serial Data Input
+white:  shared RCK

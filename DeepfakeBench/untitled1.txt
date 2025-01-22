@@ -1,0 +1,4 @@
+python3 training/test.py \
+--detector_path ./training/config/detector/spsl.yaml \
+--test_dataset "UADFV" \
+--weights_path ./training/weights/spsl_best.pth

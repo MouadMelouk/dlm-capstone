@@ -1,0 +1,109 @@
+- To run testing for parameters as below:
+
+python3 training/test.py --detector_path ./training/config/detector/xception.yaml --test_dataset "FaceForensics++" --weights_path ./training/weights/flows/pairstride1_srcstride16/xception_best.pth
+
+python3 training/test.py --detector_path ./training/config/detector/spsl.yaml --test_dataset "FaceForensics++" --weights_path ./training/weights/spsl_flows_best.pth
+python3 training/test.py --detector_path ./training/config/detector/spsl.yaml --test_dataset "FF-DF" "FF-F2F" "FF-FS" "FF-NT" --weights_path ./training/weights/flows/pairstride1_srcstride16/spsl_best.pth
+python3 training/test.py --detector_path ./training/config/detector/ucf.yaml --test_dataset "FF-DF" "FF-F2F" "FF-FS" "FF-NT" --weights_path ./training/weights/flows/pairstride1_srcstride16/ucf_best.pth
+
+
+python3 training/test.py --detector_path ./training/config/detector/xception.yaml --test_dataset "FF-DF" "FF-F2F" "FF-FS" "FF-NT" --weights_path ./training/weights/frames/xception_best.pth
+python3 training/test.py --detector_path ./training/config/detector/spsl.yaml --test_dataset "FF-DF" "FF-F2F" "FF-FS" "FF-NT" --weights_path ./training/weights/frames/spsl_best.pth
+python3 training/test.py --detector_path ./training/config/detector/ucf.yaml --test_dataset "FF-DF" "FF-F2F" "FF-FS" "FF-NT" --weights_path ./training/weights/frames/ucf_best.pth
+
+
+
+python3 training/test.py --detector_path ./training/config/detector/xception.yaml --test_dataset "FaceForensics++" --weights_path ./training/weights/frames/xception_best.pth
+
+python3 training/test.py --detector_path ./training/config/detector/xception.yaml --test_dataset "Celeb-DF-v1" --weights_path ./training/weights/xception_best.pth
+
+- To finetune:
+
+python training/train.py --detector_path ./training/config/detector/xception.yaml
+python training/train.py --detector_path ./training/config/detector/spsl.yaml
+python training/train.py --detector_path ./training/config/detector/ucf.yaml
+
+
+
+
+python3 training/test_generate_gradcam.py --detector_path ./training/config/detector/xception.yaml --test_dataset "FF-DF" "FF-F2F" "FF-FS" "FF-NT" --weights_path ./training/frames/xception_best.pth
+
+
+python training/train.py --detector_path ./training/config/detector/xception.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_xception_frames_pairstride1_srcstride16.log
+
+python training/train.py --detector_path ./training/config/detector/spsl.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_spsl_frames_pairstride1_srcstride16.log
+
+python training/train.py --detector_path ./training/config/detector/ucf.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_ucf_frames_pairstride1_srcstride16.log
+
+
+python3 training/test.py --detector_path ./training/config/detector/spsl.yaml --test_dataset "FaceForensics++" --weights_path ./training/weights/spsl_flows_best.pth
+
+
+
+
+
+
+
+cd /scratch/mh6117/MLLM_CS_AIGC_data/
+singularity shell instance://FlowFormerPlusPlusVM
+cd /scratch/mmm9912/Capstone/DeepfakeBench
+conda activate DeepfakeBench
+clear
+
+
+
+
+
+python training/train.py --detector_path ./training/config/detector/xception.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_xception_frames_pairstride1_srcstride16.log
+
+python training/train.py --detector_path ./training/config/detector/spsl.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_spsl_frames_pairstride1_srcstride16.log
+
+python training/train.py --detector_path ./training/config/detector/ucf.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_ucf_frames_pairstride1_srcstride16.log
+
+
+
+python training/train.py --detector_path ./training/config/detector/xception.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_xception_flows_pairstride1_srcstride16.log
+
+python training/train.py --detector_path ./training/config/detector/spsl.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_spsl_flows_pairstride1_srcstride16.log
+
+python training/train.py --detector_path ./training/config/detector/ucf.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_ucf_flows_pairstride1_srcstride16.log
+
+
+
+
+
+python training/train.py --detector_path ./training/config/detector/xception.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_xception_frames_pairstride1_srcstride32.log
+
+python training/train.py --detector_path ./training/config/detector/spsl.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_spsl_frames_pairstride1_srcstride32.log
+
+python training/train.py --detector_path ./training/config/detector/ucf.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_ucf_frames_pairstride1_srcstride32.log
+
+
+
+
+
+python training/train.py --detector_path ./training/config/detector/xception.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_xception_frames_pairstride1_srcstride64.log
+
+python training/train.py --detector_path ./training/config/detector/spsl.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_spsl_frames_pairstride1_srcstride64.log
+
+python training/train.py --detector_path ./training/config/detector/ucf.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_ucf_frames_pairstride1_srcstride64.log
+
+
+
+
+
+
+
+exit
+
+
+
+
+
+
+
+
+
+
+
+

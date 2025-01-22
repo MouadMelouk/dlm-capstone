@@ -1,0 +1,46 @@
+cd /scratch/mh6117/MLLM_CS_AIGC_data/
+singularity shell instance://FlowFormerPlusPlusVM
+cd /scratch/mmm9912/Capstone/FlowFormerPlusPlus
+conda activate flowformerpp
+python evaluate_FlowFormer_and_generate_flows.py --ps 1 --ss 16
+
+
+cd /scratch/mh6117/MLLM_CS_AIGC_data/
+singularity shell instance://FlowFormerPlusPlusVM
+cd /scratch/mmm9912/Capstone/FlowFormerPlusPlus
+conda activate flowformerpp
+clear
+python evaluate_FlowFormer_and_generate_flows.py --ps 1 --ss 32
+
+
+cd /scratch/mh6117/MLLM_CS_AIGC_data/
+singularity shell instance://FlowFormerPlusPlusVM
+cd /scratch/mmm9912/Capstone/FlowFormerPlusPlus
+conda activate flowformerpp
+clear
+python evaluate_FlowFormer_and_generate_flows.py --ps 1 --ss 64
+
+
+cd /scratch/mh6117/MLLM_CS_AIGC_data/
+singularity shell instance://FlowFormerPlusPlusVM
+cd /scratch/mmm9912/Capstone/FlowFormerPlusPlus
+conda activate flowformerpp
+clear
+python evaluate_FlowFormer_and_generate_flows.py --ps 2 --ss 32
+
+
+cd /scratch/mh6117/MLLM_CS_AIGC_data/
+singularity shell instance://FlowFormerPlusPlusVM
+cd /scratch/mmm9912/Capstone/FlowFormerPlusPlus
+conda activate flowformerpp
+clear
+python evaluate_FlowFormer_and_generate_flows.py --ps 4 --ss 32
+
+
+cd /scratch/mh6117/MLLM_CS_AIGC_data/
+singularity shell instance://FlowFormerPlusPlusVM
+cd /scratch/mmm9912/Capstone/FlowFormerPlusPlus
+conda activate flowformerpp
+clear
+python evaluate_FlowFormer_and_generate_flows.py --ps 8 --ss 32
+
