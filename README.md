@@ -6,12 +6,6 @@ This repository contains the project materials for **DeepfakeBench** and **FlowF
 Run the following command to clone the repository:
 git clone https://github.com/MouadMelouk/dlm-capstone.git
 
-## Folder Structure
-.
-├── DeepfakeBench        # Deepfake benchmarking tools
-├── FlowFormerPlusPlus   # FlowFormer models and scripts
-└── README.md            # Main repository readme
-
 ## Collaboration Guidelines
 
 - Pull the latest changes:
