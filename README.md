@@ -1,6 +1,6 @@
 # DLM Capstone Repository
 
-This repository contains the project materials for **DeepfakeBench** and **FlowFormerPlusPlus**.
+This repository contains the project materials for our capstone project.
 
 ## Clone the Repository
 Run the following command to clone the repository:
