@@ -1,5 +1,3 @@
-```python
-'''
 # DLM Capstone Repository
 
 This repository contains the project materials for our capstone project.
@@ -35,6 +33,3 @@ git push origin main
 ### Mouad Changes
 
 
-
-'''
-```
