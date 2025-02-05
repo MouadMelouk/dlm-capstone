@@ -34,6 +34,8 @@ from collections import defaultdict
 
 import argparse
 from logger import create_logger
+import torchvision.transforms as T
+
 
 parser = argparse.ArgumentParser(description='Process some paths.')
 parser.add_argument('--detector_path', type=str, 
@@ -43,6 +45,7 @@ parser.add_argument("--test_dataset", nargs="+")
 parser.add_argument('--weights_path', type=str, 
                     default='/mntcephfs/lab_data/zhiyuanyan/benchmark_results/auc_draw/cnn_aug/resnet34_2023-05-20-16-57-22/test/FaceForensics++/ckpt_epoch_9_best.pth')
 #parser.add_argument("--lmdb", action='store_true', default=False)
+parser.add_argument('--test_image', type=str, help="Path to a single image for testing (optional)")
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -81,7 +84,6 @@ def prepare_testing_data(config):
         test_data_loaders[one_test_name] = get_test_data_loader(config, one_test_name)
     return test_data_loaders
 
-
 def choose_metric(config):
     metric_scoring = config['metric_scoring']
     if metric_scoring not in ['eer', 'auc', 'acc', 'ap']:
@@ -112,6 +114,58 @@ def test_one_dataset(model, data_loader):
         feature_lists += list(predictions['feat'].cpu().detach().numpy())
     
     return np.array(prediction_lists), np.array(label_lists),np.array(feature_lists)
+
+def test_single_image_GRADCAM(model, image_path, output_folder="/scratch/ca2627/capstone/dlm-capstone/capstone_code/DeepfakeBench-main/gradcams"):
+
+    # Load and preprocess image
+    transform = T.Compose([
+        T.Resize((224, 224)),  # Resize to match model input
+        T.ToTensor(),
+    ])
+
+    image = pil_image.open(image_path).convert("RGB")
+    image_tensor = transform(image).unsqueeze(0).to(device)  # Add batch dimension
+
+    # Create a dummy data_dict
+    data_dict = {
+        "image": image_tensor,
+        "label": torch.tensor([0]).to(device),  # Default label (not used for inference)
+        "mask": None,
+        "landmark": None,
+        "image_path": [image_path],
+    }
+
+    # Model inference
+    predictions = inference(model, data_dict)
+
+    if 'prob' in predictions:
+        score = predictions['prob'].cpu().detach().numpy()[0]  # Standard case
+    elif 'cls' in predictions:
+        score = torch.softmax(predictions['cls'], dim=1)[:, 1].cpu().detach().numpy()[0]  # Convert logits to prob
+    else:
+        raise KeyError("Neither 'prob' nor 'cls' found in model output.")
+
+
+    # Generate Grad-CAM overlay
+    gradcam_image = model.generate_gradcam(image_tensor, target_class=1)
+
+    # Hardcoded Save Path
+    os.makedirs(output_folder, exist_ok=True)  # Ensure the output folder exists
+    image_name = os.path.basename(image_path)  # Extract original image name
+    save_name = f"{os.path.splitext(image_name)[0]}_GradCAM.png"  # Append "_GradCAM"
+    save_path = os.path.join(output_folder, save_name)  # Hardcoded output directory
+
+    # Save the Grad-CAM Image
+    cv2.imwrite(save_path, gradcam_image)  # Save heatmap
+    print(f"✅ Grad-CAM saved at: {save_path}")
+
+    # Convert score to explanation
+    threshold = 0.5  # Adjust threshold based on model calibration
+    decision = "detected" if score > threshold else "not detected"
+    explanation = f"Frequency model **{decision}** signature forgery frequencies with confidence of {score:.4f}."
+
+    return gradcam_image, explanation  # Return overlay image, explanation, and save path
+
     
 def test_epoch(model, test_data_loaders):
     # set model to eval mode
@@ -146,50 +200,66 @@ def inference(model, data_dict):
 
 
 def main():
-    # parse options and load config
+    # Load config
     with open(args.detector_path, 'r') as f:
         config = yaml.safe_load(f)
     with open('./training/config/test_config.yaml', 'r') as f:
         config2 = yaml.safe_load(f)
     config.update(config2)
+
     if 'label_dict' in config:
-        config2['label_dict']=config['label_dict']
-    weights_path = None
-    # If arguments are provided, they will overwrite the yaml settings
+        config2['label_dict'] = config['label_dict']
+
+    # Overwrite settings from command-line arguments
     if args.test_dataset:
         config['test_dataset'] = args.test_dataset
     if args.weights_path:
         config['weights_path'] = args.weights_path
         weights_path = args.weights_path
-    
-    # init seed
+    else:
+        print("Error: No model weights provided. Use --weights_path")
+        return
+
+    # Init seed
     init_seed(config)
 
-    # set cudnn benchmark if needed
-    if config['cudnn']:
+    # Set cudnn benchmark if needed
+    if config.get('cudnn', False):
         cudnn.benchmark = True
 
-    # prepare the testing data loader
-    test_data_loaders = prepare_testing_data(config)
-    
-    # prepare the model (detector)
+    # Prepare the model (detector)
     model_class = DETECTOR[config['model_name']]
     model = model_class(config).to(device)
-    epoch = 0
-    if weights_path:
-        try:
-            epoch = int(weights_path.split('/')[-1].split('.')[0].split('_')[2])
-        except:
-            epoch = 0
+
+    # Load model weights
+    try:
         ckpt = torch.load(weights_path, map_location=device)
-        model.load_state_dict(ckpt, strict=True)
-        print('===> Load checkpoint done!')
+        model.load_state_dict(ckpt, strict=False)  # Allow missing keys for robustness
+        print("===> Load checkpoint done!")
+    except Exception as e:
+        print(f"Failed to load model weights: {e}")
+        return
+
+    # Set model to eval mode
+    model.eval()
+
+    # === Test Single Image ===
+    if hasattr(args, "test_image") and args.test_image:
+        gradcam_image, explanation = test_single_image_GRADCAM(model, args.test_image)
+
+        print("\nFinal Output:")
+        print(explanation)
+        return  # Exit after testing one image
+
+    # === Test Full Dataset ===
+    if args.test_dataset:
+        print("===> Running full dataset test.")
+        test_data_loaders = prepare_testing_data(config)
+        best_metric = test_epoch(model, test_data_loaders)
+        print("===> Test Done!")
     else:
-        print('Fail to load the pre-trained weights')
-    
-    # start testing
-    best_metric = test_epoch(model, test_data_loaders)
-    print('===> Test Done!')
+        print("Error: You must specify either --test_image or --test_dataset.")
+
 
 if __name__ == '__main__':
     main()
