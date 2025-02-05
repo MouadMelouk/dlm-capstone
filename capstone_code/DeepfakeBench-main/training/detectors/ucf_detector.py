@@ -95,6 +95,80 @@ class UCFDetector(AbstractDetector):
             hidden_dim=self.half_fingerprint_dim, 
             out_f=self.half_fingerprint_dim
         )
+
+    def _save_activation(self, name, module, input, output):
+        self.activations[name] = output
+
+    def _save_gradient(self, name, module, grad_input, grad_output):
+        self.gradients[name] = grad_output[0]
+
+    def generate_gradcam(self, input_image, target_class=None, image_path="./gradcam_outputs"):
+        detector_type = "SPSL_avg_b2_15_b3_15_c3_30_c4_40"
+        datasets_base_path = "./training/datasets/rgb/"
+
+        input_image = input_image.to(next(self.parameters()).device)
+        data_dict = {'image': input_image}
+        self.eval()
+        output = self(data_dict)
+    
+        if target_class is None or target_class >= output['prob'].size(0):
+            target_class = 0
+    
+        self.zero_grad()
+        output['prob'][target_class].backward(retain_graph=True)
+    
+        # Define weights for each layer
+        layer_weights = {
+            'block2': 0.15,
+            'block3': 0.15,
+            'conv3': 0.3,
+            'conv4': 0.4
+        }
+    
+        combined_gradcam_map = None
+        for name in self.layers_to_hook:
+            activations = self.activations[name]
+            gradients = self.gradients[name]
+            weights = torch.mean(gradients, dim=(2, 3), keepdim=True)
+            gradcam_map = torch.sum(weights * activations, dim=1).squeeze()
+            gradcam_map = torch.relu(gradcam_map)
+    
+            gradcam_map = gradcam_map.cpu().detach().numpy()
+            gradcam_map -= gradcam_map.min()
+            gradcam_map /= (gradcam_map.max() + 1e-5)
+    
+            gradcam_map_resized = cv2.resize(
+                gradcam_map, (input_image.shape[3], input_image.shape[2])
+            )
+            # Normalize each map individually
+            gradcam_map_resized -= gradcam_map_resized.min()
+            gradcam_map_resized /= (gradcam_map_resized.max() + 1e-5)
+    
+            # Apply weight to the gradcam_map
+            weight = layer_weights.get(name, 1.0)  # Default weight is 1.0 if not specified
+            weighted_gradcam_map = gradcam_map_resized * weight
+    
+            if combined_gradcam_map is None:
+                combined_gradcam_map = weighted_gradcam_map
+            else:
+                combined_gradcam_map += weighted_gradcam_map
+    
+        # Normalize the combined map
+        combined_gradcam_map -= combined_gradcam_map.min()
+        combined_gradcam_map /= (combined_gradcam_map.max() + 1e-5)
+        combined_gradcam_map = np.uint8(255 * combined_gradcam_map)
+    
+        heatmap = cv2.applyColorMap(combined_gradcam_map, cv2.COLORMAP_JET)
+    
+        image_name = os.path.basename(image_path)
+        save_name = f"{os.path.splitext(image_name)[0]}_{detector_type}_GradCAM_heatmap.png"
+        save_path = os.path.join(datasets_base_path, os.path.dirname(image_path), save_name)
+    
+        cv2.imwrite(save_path, heatmap)
+    
+        return heatmap
+
+    # END CODE for generating gradcam
         
     def build_backbone(self, config):
         # prepare the backbone
