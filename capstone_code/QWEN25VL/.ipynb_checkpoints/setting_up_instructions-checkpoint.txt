@@ -1,0 +1,23 @@
+# Make sure to change to your respective netid
+
+export HF_HOME="/scratch/mmm9912/hf_cache"
+export HF_DATASETS_CACHE="/scratch/mmm9912/hf_cache/datasets"
+export TRANSFORMERS_CACHE="/scratch/mmm9912/hf_cache/transformers"
+export XDG_CACHE_HOME="/scratch/mmm9912/hf_cache"
+
+mkdir -p /scratch/mmm9912/hf_cache/datasets
+mkdir -p /scratch/mmm9912/hf_cache/transformers
+
+conda create --prefix /scratch/mmm9912/condaDONOTDELETE/qwen25vl python=3.9 -y
+conda activate /scratch/mmm9912/condaDONOTDELETE/qwen25vl
+
+conda install -c pytorch -c nvidia pytorch torchvision torchaudio pytorch-cuda=11.8 -y
+
+/scratch/mmm9912/condaDONOTDELETE/qwen25vl/bin/pip install git+https://github.com/huggingface/transformers accelerate
+/scratch/mmm9912/condaDONOTDELETE/qwen25vl/bin/pip install qwen-vl-utils[decord]
+
+/scratch/mmm9912/condaDONOTDELETE/qwen25vl/bin/pip install -U bitsandbytes
+
+/scratch/mmm9912/condaDONOTDELETE/qwen25vl/bin/pip install ipykernel
+python -m ipykernel install --user --name qwen25vl --display-name "qwen25vl"
+
