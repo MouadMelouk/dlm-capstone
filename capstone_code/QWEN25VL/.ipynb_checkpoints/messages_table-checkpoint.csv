@@ -1,0 +1,55 @@
+id,conversation_id,content,role,media_url,media_type,created_at
+31,13,Tell me whether this video is a deepfake or not,user,/scratch/mmm9912/Capstone/FRONT_END_STORAGE/videos/06d30422-d901-47db-ad3d-197e28a9d1f0.mp4,video,2025-01-29T18:10:03.223953
+32,13,"I don't know how to answer that yet. In the meantime, check out this cool meme!",assistant,/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/meme.png,image,2025-01-29T18:37:51.679111
+36,13,What about this one?,user,/scratch/mmm9912/Capstone/FRONT_END_STORAGE/videos/de0c8d4d-9fa6-4191-96f5-3fd06f3f139b.mp4,video,2025-01-29T19:32:22.778286
+38,18,Hello World,user,,,2025-01-30T08:54:53.859603
+41,21,fake ?,user,/scratch/mmm9912/Capstone/FRONT_END_STORAGE/videos/84a8a7d0-aabf-49b6-8da3-3e0930d5b6be.mp4,video,2025-01-30T15:40:00.580753
+42,22,This is test message,user,,,2025-02-03T10:39:30.894778
+43,22,This is a second test message,user,,,2025-02-03T10:40:12.039331
+44,1,Tell me whether this image is a deepfake.,user,/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/FF-NT-000frame.png,image,2025-02-07T15:52:41.154838
+45,1,The image appears to be real based on the expert model outputs.,assistant,,,2025-02-07T15:54:53.664797
+46,1,I see. How do you know that?,user,,,2025-02-07T15:55:33.375763
+47,1,"The expert models indicate that the image has low flags for both frequency and temporal analysis, with high confidence ratings suggesting it is real. The spatial analysis also shows low flags with high confidence.",assistant,,,2025-02-07T15:56:49.080684
+48,1,"I see. Which frequency expert told you that, and what exactly did it report?",user,,,2025-02-07T15:57:24.548058
+49,1,"The frequency expert mentioned was the SPSL model, which flagged 37% of the pixels as potentially fake as shown in the image attached with 97% confidence indicating the image is likely a deepfake.",assistant,/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/imageaaa.png,image,2025-02-07T15:59:43.153633
+50,1,Amazing. Thank you!,user,,,2025-02-07T16:07:09.224573
+51,1,"You're welcome! If you have any more questions, feel free to ask.",assistant,,,2025-02-07T16:08:46.510714
+52,1,"Let's talk about something else. Give me 2 math problems for undegraduate MVC, with the answer key",user,,,2025-02-07T16:09:27.944693
+53,1,"Sure, here are two simple math problems for undergraduate Multivariable Calculus (MVC) along with their answers:
+
+### Problem 1:
+Evaluate the following integral:
+\[ \int_{0}^{1} \int_{0}^{x} xy \, dy \, dx \]
+
+**Answer:**
+First, integrate with respect to \( y \):
+\[ \int_{0}^{x} xy \, dy = x \left[ \frac{y^2}{2} \right]_{0}^{x} = x \cdot \frac{x^2}{2} = \frac{x^3}{2} \]
+
+Now, integrate with respect to \( x \):
+\[ \int_{0}^{1} \frac{x^3}{2} \, dx = \frac{1}{2} \left[ \frac{x^4}{4} \right]_{0}^{1} = \frac{1}{2} \cdot \frac{1}{4} = \frac{1}{8} \]
+
+So, the answer is:
+\[ \boxed{\frac{1}{8}} \]
+
+### Problem 2:
+Find the gradient of the function \( f(x, y) = x^2 + y^2 \).
+
+**Answer:**
+The gradient of a function \( f(x, y) \) is given by:
+\[ \nabla f = \left( \frac{\partial f}{\partial x}, \frac{\partial f}{\partial y} \right) \]
+
+For \( f(x, y) = x^2 + y^2 \):
+\[ \frac{\partial f}{\partial x} = 2x \]
+\[ \frac{\partial f}{\partial y} = 2y \]
+
+So, the gradient is:
+\[ \boxed{(2x, 2y)} \]
+
+These problems should help reinforce concepts in Multivariable Calculus. Let me know if you need further assistance!",assistant,,,2025-02-07T16:12:03.866955
+54,1,Thanks!,user,,,2025-02-07T16:46:02.565962
+55,1,Thanksies!,user,,,2025-02-07T16:49:58.260469
+56,1,Thankoes!,user,,,2025-02-07T16:55:39.988006
+57,1,Thankees!,user,,,2025-02-07T16:58:41.364389
+58,1,Ello,user,,,2025-02-07T17:19:42.747996
+59,1,Hey,user,,,2025-02-07T17:23:16.489837
+60,1,Hey,user,,,2025-02-07T17:23:17.230563
