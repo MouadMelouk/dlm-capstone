@@ -76,96 +76,156 @@ class XceptionDetector(AbstractDetector):
 
     
     def generate_gradcam(self, 
-                       input_image_norm: torch.Tensor,
-                       input_image_no_norm: torch.Tensor,
-                       target_class=None, 
-                       image_path=None):
-        detector_type = "Xception"
-        gradcam_save_path = "/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/"
-        gradcam_image_name = uuid.uuid4().hex + ".png"
+                         input_image_norm: torch.Tensor,
+                         input_image_no_norm: torch.Tensor,
+                         target_class=None, 
+                         image_path=None):
+        """
+        Generate Grad-CAM for the specified input_image_norm and overlay it 
+        onto the non-normalized image (input_image_no_norm) with alpha blending.
     
-        # Unpack image_path
-        if isinstance(image_path, (tuple, list)):
-            image_path = image_path[0] if image_path else "Unknown"
-  
+        The functionality is unchanged from the original. 
+        It's simply broken into smaller helper functions for clarity.
+        """
+    
+        # -------------------------------------------------------------------------
+        # Nested helper functions
+        # -------------------------------------------------------------------------
+        def _unpack_image_path(path):
+            if isinstance(path, (tuple, list)):
+                return path[0] if path else "Unknown"
+            return path
+    
+        def _forward_and_backprop(image_norm, class_idx=None):
+            """
+            1) Forward pass on normalized image
+            2) Backprop wrt the target class
+            """
+            # Move image to correct device
+            image_norm = image_norm.to(next(self.parameters()).device)
+    
+            # Forward pass
+            data_dict_for_cam = {'image': image_norm}
+            self.eval()
+            output = self(data_dict_for_cam)
+    
+            # Default class if not provided or out of range
+            if class_idx is None or class_idx >= output['prob'].size(0):
+                class_idx = 0
+    
+            # Backprop
+            self.zero_grad()
+            output['prob'][class_idx].backward(retain_graph=True)
+    
+            return output
+    
+        def _compute_gradcam_map():
+            """
+            3) Compute Grad-CAM map from stored gradients & activations
+            """
+            # weights: (batch_size=1, C, 1, 1)
+            weights_local = torch.mean(self.gradients, dim=(2, 3), keepdim=True)
+            gradcam = torch.sum(weights_local * self.activations, dim=1).squeeze()
+            gradcam = torch.relu(gradcam)
+            return gradcam.detach().cpu().numpy()
+    
+        def _normalize_and_resize_cam(gradcam_np, h, w):
+            """
+            Normalize Grad-CAM to [0..1], then resize to (h, w),
+            and convert to 8-bit [0..255].
+            """
+            gradcam_np -= gradcam_np.min()
+            gradcam_np /= (gradcam_np.max() + 1e-5)
+    
+            gradcam_resized = cv2.resize(gradcam_np, (w, h))
+            gradcam_resized = np.uint8(255 * gradcam_resized)
+            return gradcam_resized
+    
+        def _create_colormap(gradcam_uint8):
+            """
+            Turn a [H, W] uint8 array into a BGR heatmap using COLORMAP_JET.
+            """
+            return cv2.applyColorMap(gradcam_uint8, cv2.COLORMAP_JET)
+    
+        def _convert_non_norm_to_numpy(non_norm_tensor):
+            """
+            Convert the non-normalized input image tensor (in [0..1], shape (C,H,W))
+            to a NumPy array in [0..255], shape (H,W,C). Presumably RGB.
+            """
+            arr = non_norm_tensor[0].detach().cpu().numpy().transpose(1, 2, 0)
+            arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8)
+            return arr
+    
+        def _build_alpha_heatmap(heatmap_bgr, gradcam_uint8):
+            """
+            Convert heatmap from BGR -> BGRA, then create an alpha channel 
+            based on the gradcam intensity. 
+            """
+            heatmap_bgra_local = cv2.cvtColor(heatmap_bgr, cv2.COLOR_BGR2BGRA)
+            alpha_float_local = gradcam_uint8.astype(np.float32) / 255.0
+    
+            # same logic as original: 0.7 * intensity + 0.2
+            alpha_float_local = 0.7 * alpha_float_local + 0.2
+            alpha_uint8 = (alpha_float_local * 255).astype(np.uint8)
+            heatmap_bgra_local[..., 3] = alpha_uint8
+            return heatmap_bgra_local
+    
+        def _blend_bgra(base_rgb_np, heatmap_bgra_local):
+            """
+            Manually alpha-blend BGRA heatmap onto a base RGB array.
+            The base is converted to BGRA, shapes must match (H,W,4).
+            Returns a final BGR image.
+            """
+            # Convert base from RGB to BGR
+            base_bgr_local = cv2.cvtColor(base_rgb_np, cv2.COLOR_RGB2BGR)
+            base_bgra_local = cv2.cvtColor(base_bgr_local, cv2.COLOR_BGR2BGRA)
+    
+            # Both arrays: shape (H, W, 4)
+            heatmap_a = heatmap_bgra_local[..., 3:4].astype(np.float32) / 255.0
+            inv_alpha = 1.0 - heatmap_a
+    
+            out_bgr_f = (heatmap_a * heatmap_bgra_local[..., :3].astype(np.float32)
+                         + inv_alpha * base_bgra_local[..., :3].astype(np.float32))
+            out_bgr_local = out_bgr_f.astype(np.uint8)
+            return out_bgr_local
+    
+        # -------------------------------------------------------------------------
+        # MAIN FUNCTION BODY (refactored)
+        # -------------------------------------------------------------------------
+        gradcam_image_name = uuid.uuid4().hex + ".png"
+        image_path = _unpack_image_path(image_path)
+    
+        gradcam_save_path = "/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/"
         save_path = os.path.join(gradcam_save_path, gradcam_image_name)
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
     
-        # -------------------------------
-        # 1) Forward pass on normalized image
-        # -------------------------------
-        input_image_norm = input_image_norm.to(next(self.parameters()).device)
-        data_dict_for_cam = {'image': input_image_norm}
-        self.eval()
-        output = self(data_dict_for_cam)
-  
-        if target_class is None or target_class >= output['prob'].size(0):
-            target_class = 0
-  
-        # -------------------------------
-        # 2) Backprop
-        # -------------------------------
-        self.zero_grad()
-        output['prob'][target_class].backward(retain_graph=True)
-  
-        # -------------------------------
-        # 3) Grad-CAM
-        # -------------------------------
-        weights = torch.mean(self.gradients, dim=(2, 3), keepdim=True)
-        gradcam_map = torch.sum(weights * self.activations, dim=1).squeeze()
-        gradcam_map = torch.relu(gradcam_map)
-  
-        gradcam_map = gradcam_map.detach().cpu().numpy()
-        gradcam_map -= gradcam_map.min()
-        gradcam_map /= (gradcam_map.max() + 1e-5)
-  
-        # Resize Grad-CAM to match the input resolution
-        height, width = input_image_norm.shape[2], input_image_norm.shape[3]
-        gradcam_map_resized = cv2.resize(gradcam_map, (width, height))
-        gradcam_map_resized = np.uint8(255 * gradcam_map_resized)
+        # 1) Forward pass & Backprop
+        output = _forward_and_backprop(input_image_norm, target_class)
     
-        # Apply a colormap in BGR
-        heatmap_bgr = cv2.applyColorMap(gradcam_map_resized, cv2.COLORMAP_JET)
+        # 2) Compute Grad-CAM array
+        gradcam_np = _compute_gradcam_map()
     
-        # -------------------------------
-        # 4) Convert the *non-normalized* image to NumPy
-        #    (in [0..255], shape (H,W,3)), presumably in RGB
-        # -------------------------------
-        img_no_norm_np = input_image_no_norm[0].detach().cpu().numpy().transpose(1, 2, 0)
-        img_no_norm_np = np.clip(img_no_norm_np * 255.0, 0, 255).astype(np.uint8)
+        # 3) Normalize & resize Grad-CAM
+        h, w = input_image_norm.shape[2], input_image_norm.shape[3]
+        gradcam_resized = _normalize_and_resize_cam(gradcam_np, h, w)
     
-        # -------------------------------
-        # 5) Convert heatmap to BGRA with alpha = f(Grad-CAM intensity)
-        # -------------------------------
-        heatmap_bgra = cv2.cvtColor(heatmap_bgr, cv2.COLOR_BGR2BGRA)
+        # 4) Create a BGR heatmap
+        heatmap_bgr = _create_colormap(gradcam_resized)
     
-        alpha_float = gradcam_map_resized.astype(np.float32) / 255.0
-        alpha_float = 0.7 * alpha_float + 0.2  # keep final in [0..1]
-        heatmap_bgra[..., 3] = (alpha_float * 255).astype(np.uint8)
+        # 5) Convert non-normalized image to NumPy (RGB)
+        img_no_norm_np = _convert_non_norm_to_numpy(input_image_no_norm)
     
-        # -------------------------------
-        # 6) Convert your base image to BGRA for manual alpha blending
-        #    If it's actually RGB, convert. If it's already BGR, skip the COLOR_RGB2BGR step.
-        # -------------------------------
-        base_bgr = cv2.cvtColor(img_no_norm_np, cv2.COLOR_RGB2BGR)
-        base_bgra = cv2.cvtColor(base_bgr, cv2.COLOR_BGR2BGRA)
+        # 6) Convert heatmap to BGRA with alpha
+        heatmap_bgra = _build_alpha_heatmap(heatmap_bgr, gradcam_resized)
     
-        # Make sure shapes match (H, W, 4)
-        # Now do alpha blending manually:
-        heatmap_a = (heatmap_bgra[..., 3:4].astype(np.float32) / 255.0)  # alpha in [0..1]
-        inv_alpha = (1.0 - heatmap_a)
+        # 7) Blend final BGR output
+        out_bgr = _blend_bgra(img_no_norm_np, heatmap_bgra)
     
-        # Weighted combination per pixel => out_rgb is BGR channels actually
-        out_bgr_f = (heatmap_a * heatmap_bgra[..., :3].astype(np.float32)
-                   + inv_alpha * base_bgra[..., :3].astype(np.float32))
-        out_bgr = out_bgr_f.astype(np.uint8)
-    
-        # Save & return
+        # 8) Save & return
         cv2.imwrite(save_path, out_bgr)
         return save_path, heatmap_bgr
-
-
-
+    
+        
     def build_backbone(self, config):
         # prepare the backbone
         backbone_class = BACKBONE[config['backbone_name']]
