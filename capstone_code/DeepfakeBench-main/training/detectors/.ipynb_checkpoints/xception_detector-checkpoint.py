@@ -190,7 +190,7 @@ class XceptionDetector(AbstractDetector):
             return out_bgr_local
     
         # -------------------------------------------------------------------------
-        # MAIN FUNCTION BODY (refactored)
+        # MAIN FUNCTION BODY
         # -------------------------------------------------------------------------
         gradcam_image_name = uuid.uuid4().hex + ".png"
         image_path = _unpack_image_path(image_path)
