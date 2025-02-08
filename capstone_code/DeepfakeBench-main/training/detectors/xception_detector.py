@@ -75,8 +75,10 @@ class XceptionDetector(AbstractDetector):
         self.gradients = grad_output[0]
 
 
-    def generate_gradcam(self, input_image, gradcam_save_path, target_class=None, image_path=None):    
+    def generate_gradcam(self, input_image, target_class=None, image_path=None):    
         detector_type = "Xception"  # Just for reference
+        gradcam_save_path = "/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/"
+        gradcam_image_name = uuid.uuid4().hex + ".png"
         
         # Extract the actual path if image_path is a tuple containing a list
         if isinstance(image_path, tuple) and isinstance(image_path[0], list) and isinstance(image_path[0][0], str):
@@ -85,7 +87,7 @@ class XceptionDetector(AbstractDetector):
             raise TypeError("Expected image_path to be a string or a tuple containing a list with a string.")
     
         # Construct full save path
-        save_path = os.path.join(gradcam_save_path, uuid.uuid4().hex)
+        save_path = os.path.join(gradcam_save_path, gradcam_image_name)
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
     
         # Move the input image to the correct device
@@ -268,7 +270,6 @@ class XceptionDetector(AbstractDetector):
                 # Generate Grad-CAM - consider setting target_class=1 for consistent visualization
                 overlay_path,heatmap = self.generate_gradcam(
                     input_image,
-                    gradcam_save_path,
                     target_class=None,  # Default to class 0 visualization
                     image_path=input_path
                 )
