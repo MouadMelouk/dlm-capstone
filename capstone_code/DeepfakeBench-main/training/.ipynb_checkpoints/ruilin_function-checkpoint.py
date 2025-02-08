@@ -96,6 +96,8 @@ def run_inference_on_images_with_old_preprocess(
         # Convert to PIL
         pil_img = Image.fromarray(img_rgb)
 
+        img_tensor_no_norm = T.ToTensor()(pil_img)  # shape (C,H,W), in [0..1]
+
         # ToTensor
         img_tensor = T.ToTensor()(pil_img)
 
@@ -104,29 +106,34 @@ def run_inference_on_images_with_old_preprocess(
         std = cfg['std']    # e.g., [0.229, 0.224, 0.225]
         img_tensor = T.Normalize(mean, std)(img_tensor)
 
-        return img_tensor.unsqueeze(0).to(device)  # Shape: (1, C, H, W)
+        return img_tensor, img_tensor_no_norm
 
     # 6. Run inference over all images
     probabilities = []
     pred = []
     with torch.no_grad():
         for path in image_paths:
-            # Preprocess each image
-            input_tensor = preprocess_image_cv2(path[0], config)
-
-            # Model forward pass
-            # The model's forward might expect a dict (depending on your design).
-            # Adjust below if your model forward is different:
-            pathnew= os.path.join(*path[0].split('/')[-2:])
-            data_dict = {'image': input_tensor, 'image_path':[[pathnew]]}
+            input_tensor_norm, input_tensor_no_norm = preprocess_image_cv2(path[0], config)
+            
+            # Expand batch dimension and move to device
+            input_tensor_norm = input_tensor_norm.unsqueeze(0).to(device)
+            input_tensor_no_norm = input_tensor_no_norm.unsqueeze(0).to(device)
+    
+            # The data_dict now holds both versions:
+            pathnew = os.path.join(*path[0].split('/')[-2:])
+            data_dict = {
+                'image': input_tensor_norm,      # normalized (for forward pass)
+                'image_no_norm': input_tensor_no_norm,  # non-normalized (for overlay)
+                'image_path': [[pathnew]]
+            }
+    
             output_dict = model(data_dict, inference=True)
-            
-            # Suppose 'prob' is your final classification probability in output_dict
-            prob = output_dict['prob'].cpu().numpy()[0]  # shape: scalar or (1,) array
-            # If your model outputs a single probability for "fake", prob might be float
+    
+            # Suppose 'prob' is your final classification probability:
+            prob = output_dict['prob'].cpu().numpy()[0]
             probabilities.append(float(prob))
-            
-            #get the hard (0/1) output
+    
+            # Hard predictions
             results = model.predict_labels(data_dict)
             pred.extend(results)
 

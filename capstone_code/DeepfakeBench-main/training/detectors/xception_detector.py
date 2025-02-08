@@ -75,82 +75,65 @@ class XceptionDetector(AbstractDetector):
         self.gradients = grad_output[0]
 
 
-    def generate_gradcam(self, input_image, target_class=None, image_path=None):    
-        detector_type = "Xception"  # Just for reference
+    def generate_gradcam(self, 
+                         input_image_norm: torch.Tensor,
+                         input_image_no_norm: torch.Tensor,
+                         target_class=None, 
+                         image_path=None):
+        detector_type = "Xception"
         gradcam_save_path = "/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/"
         gradcam_image_name = uuid.uuid4().hex + ".png"
         
-        # Extract the actual path if image_path is a tuple containing a list
-        if isinstance(image_path, tuple) and isinstance(image_path[0], list) and isinstance(image_path[0][0], str):
-            image_path = image_path[0][0]
-        elif not isinstance(image_path, str):
-            raise TypeError("Expected image_path to be a string or a tuple containing a list with a string.")
+        if isinstance(image_path, (tuple, list)):
+            image_path = image_path[0] if image_path else "Unknown"
     
-        # Construct full save path
         save_path = os.path.join(gradcam_save_path, gradcam_image_name)
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
     
-        # Move the input image to the correct device
-        input_image = input_image.to(next(self.parameters()).device)
-        data_dict = {'image': input_image}
-        
-        self.eval()
-        output = self(data_dict)
+        # 1) Forward pass on normalized image
+        input_image_norm = input_image_norm.to(next(self.parameters()).device)
+        data_dict_for_cam = {'image': input_image_norm}
     
-        # Choose target class
+        self.eval()
+        output = self(data_dict_for_cam)
+    
         if target_class is None or target_class >= output['prob'].size(0):
             target_class = 0
     
+        # 2) Backprop
         self.zero_grad()
         output['prob'][target_class].backward(retain_graph=True)
     
-        # Compute Grad-CAM
+        # 3) Grad-CAM
         weights = torch.mean(self.gradients, dim=(2, 3), keepdim=True)
         gradcam_map = torch.sum(weights * self.activations, dim=1).squeeze()
         gradcam_map = torch.relu(gradcam_map)
     
-        # Normalize the Grad-CAM heatmap
-        gradcam_map = gradcam_map.cpu().detach().numpy()
+        gradcam_map = gradcam_map.detach().cpu().numpy()
         gradcam_map -= gradcam_map.min()
         gradcam_map /= (gradcam_map.max() + 1e-5)
     
-        # Resize and convert to 8-bit image
-        gradcam_map_resized = cv2.resize(gradcam_map, (input_image.shape[3], input_image.shape[2]))
+        # 4) Resize Grad-CAM to match image resolution
+        height, width = input_image_norm.shape[2], input_image_norm.shape[3]
+        gradcam_map_resized = cv2.resize(gradcam_map, (width, height))
         gradcam_map_resized = np.uint8(255 * gradcam_map_resized)
-    
-        # Apply colormap
         heatmap = cv2.applyColorMap(gradcam_map_resized, cv2.COLORMAP_JET)
     
-        # ---------------------------------------------------------------------------- #
-        #                 Overlay heatmap onto the *original* input image
-        # ---------------------------------------------------------------------------- #
-        # 1. Convert the input_image tensor to a NumPy array for visualization.
-        #    Assuming input_image is in range [0, 1] or [-1, +1], you may want to
-        #    reverse any normalization you applied. Below is a simple approach
-        #    if your image is already in [0, 1]. Adjust as needed.
-        #
-        #    If you have a batch dimension, use [0] to pick the first image.
-        # ---------------------------------------------------------------------------- #
-        # Example with no normalization reversion (assuming input is [0..1]):
+        # --------------------------------------------------------------------- #
+        #    Use the NON-NORMALIZED image for overlay
+        # --------------------------------------------------------------------- #
+        # Move the non-normalized image to CPU and convert to NumPy [H, W, C].
+        img_no_norm_np = input_image_no_norm[0].detach().cpu().numpy().transpose(1, 2, 0)
+        img_no_norm_np = np.clip(img_no_norm_np * 255.0, 0, 255).astype(np.uint8)
     
-        img_np = input_image[0].detach().cpu().numpy().transpose(1, 2, 0)  # [H, W, C]
-        img_np = (img_np * 255).astype(np.uint8)  # scale to [0..255]
+        # If your pipeline internally used RGB, but cv2.addWeighted expects BGR, 
+        # you can optionally convert. If the colors look off, do:
+        # img_no_norm_np = cv2.cvtColor(img_no_norm_np, cv2.COLOR_RGB2BGR)
     
-        # ---------------------------------------------------------------------------- #
-        # 2. Blend (overlay) the original image and the heatmap using cv2.addWeighted
-        # ---------------------------------------------------------------------------- #
-        # Note that 'heatmap' is in BGR (because of cv2) and 'img_np' is likely in RGB
-        # if loaded that way. If your input was also in BGR, this is fine; otherwise,
-        # you might need to convert img_np to BGR. Adjust as needed.
-        # 
-        # alpha = 0.6, beta = 0.4 -> these control how strong the heatmap overlay is.
-        # ---------------------------------------------------------------------------- #
-        overlay = cv2.addWeighted(img_np, 0.5, heatmap, 0.5,0)
-    
-        # Save the overlay image
+        overlay = cv2.addWeighted(img_no_norm_np, 0.5, heatmap, 0.5, 0)
         cv2.imwrite(save_path, overlay)
     
-        return save_path, heatmap  # Optionally return the overlay if needed
+        return save_path, heatmap
 
 
     def build_backbone(self, config):
@@ -216,40 +199,56 @@ class XceptionDetector(AbstractDetector):
             pred_dict['embeddings'] = embeddings
         return pred_dict
 
-
+    
     def predict_labels(self, data_dict: dict, threshold=0.5) -> list:
-
         def calculate_red_percentage(heatmap, red_threshold=150, non_red_threshold=100):
-            """
-            Calculates the percentage of red pixels in the given heatmap.
-            
-            Parameters:
-                heatmap (numpy.ndarray): The Grad-CAM heatmap (BGR format).
-                red_threshold (int): Minimum intensity for a pixel to be considered "red".
-                non_red_threshold (int): Maximum intensity for blue/green channels to reduce false positives.
-            
-            Returns:
-                float: Percentage of red pixels in the image (0 to 100).
-            """
-            # Extract B, G, R channels
+            # same as before
             blue_channel, green_channel, red_channel = cv2.split(heatmap)
-        
-            # Define red pixels: High red value & lower blue/green to avoid yellow/orange
-            red_mask = (red_channel >= red_threshold) & (blue_channel <= non_red_threshold) & (green_channel <= non_red_threshold)
-        
-            # Compute percentage of red pixels
+            red_mask = ((red_channel >= red_threshold) &
+                        (blue_channel <= non_red_threshold) &
+                        (green_channel <= non_red_threshold))
             total_pixels = heatmap.shape[0] * heatmap.shape[1]
             red_pixels = np.sum(red_mask)
-            
-            return (red_pixels / total_pixels) * 100  # Convert to percentage
-        """
-        Predict hard labels and generate Grad-CAM heatmaps for each input image.
-        Returns a list where each element is a tuple containing:
-            (gradcam_heatmap, prediction_string)
-        """
+            return (red_pixels / total_pixels) * 100.0
+
         self.eval()
         combined_results = []
-        
+    
+        with torch.enable_grad():
+            outputs = self.forward(data_dict, inference=True)
+            prob = outputs['prob']  # Probability of being 'fake'
+            binary_preds = (prob >= threshold)
+            predictions_str = [
+                "General model detected forgery." if is_fake else "General model did not detect forgery."
+                for is_fake in binary_preds
+            ]
+    
+            batch_size = data_dict['image'].size(0)
+            
+            for i in range(batch_size):
+                # Normalized tensor (for forward pass / backprop)
+                input_image_norm = data_dict['image'][i].unsqueeze(0)
+                # Non-normalized tensor (for visualization)
+                input_image_no_norm = data_dict['image_no_norm'][i].unsqueeze(0)
+    
+                input_path = data_dict['image_path'][i][0]
+    
+                # Generate Grad-CAM
+                overlay_path, heatmap = self.generate_gradcam(
+                    input_image_norm,
+                    input_image_no_norm,
+                    target_class=None,  # or 1 if your "fake" label is 1
+                    image_path=input_path
+                )
+    
+                # Example of computing a metric from heatmap
+                percentage_red = calculate_red_percentage(heatmap)
+    
+                combined_results.append(
+                    (overlay_path, float(prob[i]), predictions_str[i], percentage_red)
+                )
+        return combined_results
+
         
         with torch.enable_grad():
             outputs = self.forward(data_dict, inference=True)
