@@ -45,7 +45,9 @@ Results = run_inference_on_images_with_old_preprocess(
 - **Probability score**  
   **Example:**
   ```python
-  tensor([0.0317], device='cuda:0', grad_fn=<SelectBackward0>)
+  tensor([0.0317], device='cuda:0', grad_fn=<SelectBackward0>)```
+- **Text description of the model's decision** ("General model did not detect forgery")
+- **Red percentage in the Grad-CAM output** (8.099365234375)
 
 
 
