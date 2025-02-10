@@ -34,7 +34,9 @@ Results = run_inference_on_images_with_old_preprocess(
     weights_path="path to training/weights/xception_best.pth",
     image_paths=test_paths,
     cuda=True,
-    manual_seed=42
+    manual_seed=42,
+    running_inference = True/False
+    # only False for spsl (True for other models) due to original code integrated label and accuracy calculation in spsl_detector class function
 )
 ```
 
