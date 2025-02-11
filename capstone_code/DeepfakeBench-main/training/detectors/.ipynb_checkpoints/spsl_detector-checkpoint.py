@@ -27,9 +27,8 @@ Reference:
 Notes:
 To ensure consistency in the comparison with other detectors, we have opted not to utilize the shallow Xception architecture. Instead, we are employing the original Xception model.
 '''
-
+import uuid
 import os
-import cv2
 import datetime
 import logging
 import numpy as np
@@ -51,6 +50,7 @@ from detectors import DETECTOR
 from networks import BACKBONE
 from loss import LOSSFUNC
 import random
+import cv2
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class SpslDetector(AbstractDetector):
         self.config = config
         self.backbone = self.build_backbone(config)
         self.loss_func = self.build_loss(config)
-
+        
         # Initialize placeholders for GradCAM
         self.activations = {}
         self.gradients = {}
@@ -82,81 +82,152 @@ class SpslDetector(AbstractDetector):
         self.prob, self.label = [], []
         self.correct, self.total = 0, 0
 
-    # START code for generating the gradcam
-
     def _save_activation(self, name, module, input, output):
         self.activations[name] = output
 
     def _save_gradient(self, name, module, grad_input, grad_output):
         self.gradients[name] = grad_output[0]
 
-    def generate_gradcam(self, input_image, target_class=None, image_path="./gradcam_outputs"):
-        detector_type = "SPSL_avg_b2_15_b3_15_c3_30_c4_40"
-        datasets_base_path = "./training/datasets/rgb/"
 
-        input_image = input_image.to(next(self.parameters()).device)
-        data_dict = {'image': input_image}
+    def generate_gradcam(self, 
+                         input_image_norm: torch.Tensor,
+                         input_image_no_norm: torch.Tensor,
+                         target_class=None, 
+                         image_path=None):
+        """
+        Generate a Grad-CAM heatmap overlay for the specified input image.
+        
+        The function:
+          1. Runs a forward pass (using the normalized image) and backpropagates
+             with respect to the target class.
+          2. Computes weighted Grad-CAM maps from several layers.
+          3. Normalizes, resizes, and creates a COLORMAP_JET heatmap.
+          4. Converts the original (non-normalized) image from a tensor to a NumPy RGB array.
+          5. Creates an alpha channel for the heatmap and manually blends it with the original image.
+          6. Saves the blended output to a predetermined directory using a UUID-generated filename.
+        
+        Returns:
+            save_path (str): The full path where the blended image is saved.
+            heatmap_bgr (np.array): The BGR heatmap without blending.
+        """
+        
+        # -------------------------------------------------------------------------
+        # 1. Set up saving details and unpack image_path if necessary
+        # -------------------------------------------------------------------------
+        # You can override or ignore image_path as needed – here we mimic the first code.
+        if isinstance(image_path, (tuple, list)):
+            image_path = image_path[0] if image_path else "Unknown"
+        
+        # Define base save directory and unique image name.
+        gradcam_save_path = '/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/'
+        gradcam_image_name = uuid.uuid4().hex + ".png"
+        save_path = os.path.join(gradcam_save_path, gradcam_image_name)
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
+        # -------------------------------------------------------------------------
+        # 2. Forward Pass and Backpropagation (using normalized image)
+        # -------------------------------------------------------------------------
+        input_image_norm = input_image_norm.to(next(self.parameters()).device)
+        data_dict = {'image': input_image_norm}
         self.eval()
-        output = self(data_dict)
-    
+        output = self.forward(data_dict,inference=False)
+        
+        # Default to target class 0 if not provided or if out-of-range.
         if target_class is None or target_class >= output['prob'].size(0):
             target_class = 0
-    
+        
         self.zero_grad()
         output['prob'][target_class].backward(retain_graph=True)
-    
-        # Define weights for each layer
+        
+        # -------------------------------------------------------------------------
+        # 3. Compute the Combined (Weighted) Grad-CAM Map
+        # -------------------------------------------------------------------------
+        # Define the weights for each layer. Adjust these as necessary.
         layer_weights = {
             'block2': 0.15,
             'block3': 0.15,
             'conv3': 0.3,
             'conv4': 0.4
         }
-    
+        
         combined_gradcam_map = None
+        # Loop over the layers you have hooked (assumed to be stored in self.layers_to_hook)
         for name in self.layers_to_hook:
             activations = self.activations[name]
             gradients = self.gradients[name]
+            
+            # Compute the channel-wise mean of the gradients to obtain the weights.
             weights = torch.mean(gradients, dim=(2, 3), keepdim=True)
+            # Compute the weighted combination of activations.
             gradcam_map = torch.sum(weights * activations, dim=1).squeeze()
             gradcam_map = torch.relu(gradcam_map)
-    
-            gradcam_map = gradcam_map.cpu().detach().numpy()
-            gradcam_map -= gradcam_map.min()
-            gradcam_map /= (gradcam_map.max() + 1e-5)
-    
+            
+            # Convert to numpy and normalize.
+            gradcam_map_np = gradcam_map.cpu().detach().numpy()
+            gradcam_map_np -= gradcam_map_np.min()
+            gradcam_map_np /= (gradcam_map_np.max() + 1e-5)
+            
+            # Resize to the spatial size of the input image.
             gradcam_map_resized = cv2.resize(
-                gradcam_map, (input_image.shape[3], input_image.shape[2])
+                gradcam_map_np, (input_image_norm.shape[3], input_image_norm.shape[2])
             )
-            # Normalize each map individually
+            # Normalize again (in case resizing changed the range).
             gradcam_map_resized -= gradcam_map_resized.min()
             gradcam_map_resized /= (gradcam_map_resized.max() + 1e-5)
-    
-            # Apply weight to the gradcam_map
-            weight = layer_weights.get(name, 1.0)  # Default weight is 1.0 if not specified
+            
+            # Apply the layer-specific weight.
+            weight = layer_weights.get(name, 1.0)
             weighted_gradcam_map = gradcam_map_resized * weight
-    
+            
             if combined_gradcam_map is None:
                 combined_gradcam_map = weighted_gradcam_map
             else:
                 combined_gradcam_map += weighted_gradcam_map
-    
-        # Normalize the combined map
+        
+        # Final normalization and conversion to 8-bit.
         combined_gradcam_map -= combined_gradcam_map.min()
         combined_gradcam_map /= (combined_gradcam_map.max() + 1e-5)
-        combined_gradcam_map = np.uint8(255 * combined_gradcam_map)
-    
-        heatmap = cv2.applyColorMap(combined_gradcam_map, cv2.COLORMAP_JET)
-    
-        image_name = os.path.basename(image_path)
-        save_name = f"{os.path.splitext(image_name)[0]}_{detector_type}_GradCAM_heatmap.png"
-        save_path = os.path.join(datasets_base_path, os.path.dirname(image_path), save_name)
-    
-        cv2.imwrite(save_path, heatmap)
-    
-        return heatmap
-    
-    # END code for generating gradcam!
+        combined_gradcam_map_uint8 = np.uint8(255 * combined_gradcam_map)
+        
+        # -------------------------------------------------------------------------
+        # 4. Create the Heatmap
+        # -------------------------------------------------------------------------
+        heatmap_bgr = cv2.applyColorMap(combined_gradcam_map_uint8, cv2.COLORMAP_JET)
+        
+        # -------------------------------------------------------------------------
+        # 5. Convert the Original (Non-normalized) Image to a NumPy Array
+        # -------------------------------------------------------------------------
+        # Assumes input_image_no_norm is a tensor with shape (B, C, H, W) in range [0,1].
+        img_no_norm_np = input_image_no_norm[0].detach().cpu().numpy().transpose(1, 2, 0)
+        img_no_norm_np = np.clip(img_no_norm_np * 255.0, 0, 255).astype(np.uint8)
+        
+        # -------------------------------------------------------------------------
+        # 6. Build the Alpha Heatmap and Blend with the Original Image
+        # -------------------------------------------------------------------------
+        # Convert the heatmap to BGRA (adds an alpha channel).
+        heatmap_bgra = cv2.cvtColor(heatmap_bgr, cv2.COLOR_BGR2BGRA)
+        # Create an alpha channel from the Grad-CAM intensity (scaled as in the original logic).
+        alpha_float = combined_gradcam_map_uint8.astype(np.float32) / 255.0
+        alpha_float = 0.7 * alpha_float + 0.2  # Adjust transparency as desired.
+        alpha_uint8 = (alpha_float * 255).astype(np.uint8)
+        heatmap_bgra[..., 3] = alpha_uint8
+        
+        # Convert the original image (assumed RGB) to BGRA.
+        base_bgr = cv2.cvtColor(img_no_norm_np, cv2.COLOR_RGB2BGR)
+        base_bgra = cv2.cvtColor(base_bgr, cv2.COLOR_BGR2BGRA)
+        
+        # Manually blend using the alpha channel.
+        heatmap_alpha = heatmap_bgra[..., 3:4].astype(np.float32) / 255.0
+        inv_alpha = 1.0 - heatmap_alpha
+        blended_bgr = (heatmap_alpha * heatmap_bgra[..., :3].astype(np.float32) +
+                       inv_alpha * base_bgra[..., :3].astype(np.float32)).astype(np.uint8)
+        
+        # -------------------------------------------------------------------------
+        # 7. Save and Return
+        # -------------------------------------------------------------------------
+        cv2.imwrite(save_path, blended_bgr)
+        return save_path, heatmap_bgr
+
 
     def build_backbone(self, config):
         # prepare the backbone
@@ -172,7 +243,7 @@ class SpslDetector(AbstractDetector):
         state_dict = {k:v for k, v in state_dict.items() if 'fc' not in k}
 
         # remove conv1 from state_dict
-        conv1_data = state_dict.pop('backbone.conv1.weight')
+        conv1_data = state_dict.pop('conv1.weight')
 
         backbone.load_state_dict(state_dict, False)
         logger.info('Load pretrained model from {}'.format(config['pretrained']))
@@ -226,6 +297,14 @@ class SpslDetector(AbstractDetector):
         prob = torch.softmax(pred, dim=1)[:, 1]
         # build the prediction dict for each output
         pred_dict = {'cls': pred, 'prob': prob, 'feat': features}
+        if inference:
+            self.prob.append(pred_dict['prob'].detach().squeeze().cpu().numpy())
+            self.label.append(data_dict['label'].detach().squeeze().cpu().numpy())
+            # deal with acc
+            _, prediction_class = torch.max(pred, 1)
+            correct = (prediction_class == data_dict['label']).sum().item()
+            self.correct += correct
+            self.total += data_dict['label'].size(0)
 
         return pred_dict
 
@@ -243,3 +322,64 @@ class SpslDetector(AbstractDetector):
         reconstructed_x = torch.real(torch.fft.ifftn(reconstructed_X,dim=(-1,-2)))
         # reconstructed_x = torch.real(torch.fft.ifftn(reconstructed_X))
         return reconstructed_x
+    
+    def predict_labels(self, data_dict: dict, threshold=0.5) -> list:
+        def calculate_highlighted_percentage(heatmap, threshold=100):
+            # Split channels
+            blue_channel, green_channel, red_channel = cv2.split(heatmap)
+            
+            # Red mask
+            red_mask = (red_channel >= threshold) & (blue_channel <= threshold) & (green_channel <= threshold)
+        
+            # Orange mask
+            orange_mask = (red_channel >= threshold) & (green_channel >= threshold) & (green_channel <= 200) & (blue_channel <= threshold)
+        
+            # Yellow mask
+            yellow_mask = (red_channel >= threshold) & (green_channel >= threshold) & (blue_channel <= threshold)
+        
+            # Combine all masks
+            combined_mask = red_mask | orange_mask | yellow_mask
+        
+            # Calculate percentage
+            total_pixels = heatmap.shape[0] * heatmap.shape[1]
+            highlighted_pixels = np.sum(combined_mask)
+            
+            return (highlighted_pixels / total_pixels) * 100.0
+
+        self.eval()
+        combined_results = []
+    
+        with torch.enable_grad():
+            outputs = self.forward(data_dict, inference=False)
+            prob = outputs['prob']  # Probability of being 'fake'
+            binary_preds = (prob >= threshold)
+            predictions_str = [
+                "SPSL model detected forgery." if is_fake else "SPSL model did not detect forgery."
+                for is_fake in binary_preds
+            ]
+    
+            batch_size = data_dict['image'].size(0)
+            
+            for i in range(batch_size):
+                # Normalized tensor (for forward pass / backprop)
+                input_image_norm = data_dict['image'][i].unsqueeze(0)
+                # Non-normalized tensor (for visualization)
+                input_image_no_norm = data_dict['image_no_norm'][i].unsqueeze(0)
+    
+                input_path = data_dict['image_path'][i][0]
+    
+                # Generate Grad-CAM
+                overlay_path, heatmap = self.generate_gradcam(
+                    input_image_norm,
+                    input_image_no_norm,
+                    target_class=None,  # or 1 if your "fake" label is 1
+                    image_path=input_path
+                )
+    
+                # Example of computing a metric from heatmap
+                percentage_red = calculate_highlighted_percentage(heatmap)
+    
+                combined_results.append(
+                    (overlay_path, float(prob[i]), predictions_str[i], percentage_red)
+                )
+        return combined_results

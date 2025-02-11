@@ -119,9 +119,9 @@ class SpslDetector(AbstractDetector):
             image_path = image_path[0] if image_path else "Unknown"
         
         # Define base save directory and unique image name.
-        base_save_dir = '/scratch/rz2288/DeepfakeBench/gradcam_output/test0210/'
+        gradcam_save_path = '/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/'
         gradcam_image_name = uuid.uuid4().hex + ".png"
-        save_path = os.path.join(base_save_dir, gradcam_image_name)
+        save_path = os.path.join(gradcam_save_path, gradcam_image_name)
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         
         # -------------------------------------------------------------------------
@@ -324,15 +324,27 @@ class SpslDetector(AbstractDetector):
         return reconstructed_x
     
     def predict_labels(self, data_dict: dict, threshold=0.5) -> list:
-        def calculate_red_percentage(heatmap, red_threshold=150, non_red_threshold=100):
-            # same as before
+        def calculate_highlighted_percentage(heatmap, threshold=100):
+            # Split channels
             blue_channel, green_channel, red_channel = cv2.split(heatmap)
-            red_mask = ((red_channel >= red_threshold) &
-                        (blue_channel <= non_red_threshold) &
-                        (green_channel <= non_red_threshold))
+            
+            # Red mask
+            red_mask = (red_channel >= threshold) & (blue_channel <= threshold) & (green_channel <= threshold)
+        
+            # Orange mask
+            orange_mask = (red_channel >= threshold) & (green_channel >= threshold) & (green_channel <= 200) & (blue_channel <= threshold)
+        
+            # Yellow mask
+            yellow_mask = (red_channel >= threshold) & (green_channel >= threshold) & (blue_channel <= threshold)
+        
+            # Combine all masks
+            combined_mask = red_mask | orange_mask | yellow_mask
+        
+            # Calculate percentage
             total_pixels = heatmap.shape[0] * heatmap.shape[1]
-            red_pixels = np.sum(red_mask)
-            return (red_pixels / total_pixels) * 100.0
+            highlighted_pixels = np.sum(combined_mask)
+            
+            return (highlighted_pixels / total_pixels) * 100.0
 
         self.eval()
         combined_results = []
@@ -365,44 +377,9 @@ class SpslDetector(AbstractDetector):
                 )
     
                 # Example of computing a metric from heatmap
-                percentage_red = calculate_red_percentage(heatmap)
+                percentage_red = calculate_highlighted_percentage(heatmap)
     
                 combined_results.append(
                     (overlay_path, float(prob[i]), predictions_str[i], percentage_red)
                 )
-        return combined_results
-
-        
-        with torch.enable_grad():
-            outputs = self.forward(data_dict, inference=True)
-            prob = outputs['prob']  # Probability of being 'fake'
-            binary_preds = (prob >= threshold)
-            predictions_str = [
-                "SPSL model detected forgery" if is_fake else "SPSL model did not detect forgery"
-                for is_fake in binary_preds
-            ]
-    
-            batch_size = data_dict['image'].size(0)
-            
-            for i in range(batch_size):
-                # Extract individual image
-                input_image = data_dict['image'][i].unsqueeze(0)
-                input_path = data_dict['image_path'][i][0]
-                
-                # Generate Grad-CAM - consider setting target_class=1 for consistent visualization
-                overlay_path,heatmap = self.generate_gradcam(
-                    input_image,
-                    target_class=None,  # Default to class 0 visualization
-                    image_path=input_path
-                )
-                
-                # Pair the heatmap with its corresponding prediction
-                #combined_results.append((heatmap, predictions_str[i]))
-
-                # Compute percentage of red pixels
-                percentage_red = calculate_red_percentage(heatmap)
-    
-                # Append the results: (heatmap, prediction string, percentage red)
-                combined_results.append((overlay_path, prob, predictions_str[i], percentage_red))
-            
         return combined_results

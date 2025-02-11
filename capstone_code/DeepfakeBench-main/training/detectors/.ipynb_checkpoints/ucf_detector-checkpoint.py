@@ -23,8 +23,10 @@ Reference:
   year={2023}
 }
 '''
-
+import uuid
+import cv2
 import os
+import cv2
 import datetime
 import logging
 import random
@@ -56,7 +58,7 @@ class UCFDetector(AbstractDetector):
         self.config = config
         self.num_classes = config['backbone_config']['num_classes']
         self.encoder_feat_dim = config['encoder_feat_dim']
-        self.half_fingerprint_dim = self.encoder_feat_dim//2
+        self.half_fingerprint_dim = self.encoder_feat_dim // 2
 
         self.encoder_f = self.build_backbone(config)
         self.encoder_c = self.build_backbone(config)
@@ -65,16 +67,17 @@ class UCFDetector(AbstractDetector):
         self.prob, self.label = [], []
         self.correct, self.total = 0, 0
         
-        # basic function
+        # basic functions
         self.lr = nn.LeakyReLU(inplace=True)
         self.do = nn.Dropout(0.2)
         self.pool = nn.AdaptiveAvgPool2d(1)
 
-        # conditional gan
+        # conditional GAN
         self.con_gan = Conditional_UNet()
 
-        # head
-        specific_task_number = len(config['train_dataset']) + 1  # default: 5 in FF++
+        # heads for specific and shared tasks
+        specific_task_number = 5 #len(config['train_dataset']) + 1  # Default: 5 in FF++
+
         self.head_spe = Head(
             in_f=self.half_fingerprint_dim, 
             hidden_dim=self.encoder_feat_dim,
@@ -85,6 +88,7 @@ class UCFDetector(AbstractDetector):
             hidden_dim=self.encoder_feat_dim, 
             out_f=self.num_classes
         )
+
         self.block_spe = Conv2d1x1(
             in_f=self.encoder_feat_dim,
             hidden_dim=self.half_fingerprint_dim, 
@@ -95,81 +99,156 @@ class UCFDetector(AbstractDetector):
             hidden_dim=self.half_fingerprint_dim, 
             out_f=self.half_fingerprint_dim
         )
-
-    def _save_activation(self, name, module, input, output):
-        self.activations[name] = output
-
-    def _save_gradient(self, name, module, grad_input, grad_output):
-        self.gradients[name] = grad_output[0]
-
-    def generate_gradcam(self, input_image, target_class=None, image_path="./gradcam_outputs"):
-        detector_type = "SPSL_avg_b2_15_b3_15_c3_30_c4_40"
-        datasets_base_path = "./training/datasets/rgb/"
-
-        input_image = input_image.to(next(self.parameters()).device)
-        data_dict = {'image': input_image}
-        self.eval()
-        output = self(data_dict)
-    
-        if target_class is None or target_class >= output['prob'].size(0):
-            target_class = 0
-    
-        self.zero_grad()
-        output['prob'][target_class].backward(retain_graph=True)
-    
-        # Define weights for each layer
-        layer_weights = {
-            'block2': 0.15,
-            'block3': 0.15,
-            'conv3': 0.3,
-            'conv4': 0.4
-        }
-    
-        combined_gradcam_map = None
-        for name in self.layers_to_hook:
-            activations = self.activations[name]
-            gradients = self.gradients[name]
-            weights = torch.mean(gradients, dim=(2, 3), keepdim=True)
-            gradcam_map = torch.sum(weights * activations, dim=1).squeeze()
-            gradcam_map = torch.relu(gradcam_map)
-    
-            gradcam_map = gradcam_map.cpu().detach().numpy()
-            gradcam_map -= gradcam_map.min()
-            gradcam_map /= (gradcam_map.max() + 1e-5)
-    
-            gradcam_map_resized = cv2.resize(
-                gradcam_map, (input_image.shape[3], input_image.shape[2])
-            )
-            # Normalize each map individually
-            gradcam_map_resized -= gradcam_map_resized.min()
-            gradcam_map_resized /= (gradcam_map_resized.max() + 1e-5)
-    
-            # Apply weight to the gradcam_map
-            weight = layer_weights.get(name, 1.0)  # Default weight is 1.0 if not specified
-            weighted_gradcam_map = gradcam_map_resized * weight
-    
-            if combined_gradcam_map is None:
-                combined_gradcam_map = weighted_gradcam_map
-            else:
-                combined_gradcam_map += weighted_gradcam_map
-    
-        # Normalize the combined map
-        combined_gradcam_map -= combined_gradcam_map.min()
-        combined_gradcam_map /= (combined_gradcam_map.max() + 1e-5)
-        combined_gradcam_map = np.uint8(255 * combined_gradcam_map)
-    
-        heatmap = cv2.applyColorMap(combined_gradcam_map, cv2.COLORMAP_JET)
-    
-        image_name = os.path.basename(image_path)
-        save_name = f"{os.path.splitext(image_name)[0]}_{detector_type}_GradCAM_heatmap.png"
-        save_path = os.path.join(datasets_base_path, os.path.dirname(image_path), save_name)
-    
-        cv2.imwrite(save_path, heatmap)
-    
-        return heatmap
-
-    # END CODE for generating gradcam
         
+        # Grad-CAM placeholders and hooks
+        self.activations = None
+        self.gradients = None
+        self.encoder_f.conv4.register_forward_hook(self._save_activation)
+        self.encoder_f.conv4.register_backward_hook(self._save_gradient)
+
+    def _save_activation(self, module, input, output):
+        self.activations = output
+
+    def _save_gradient(self, module, grad_input, grad_output):
+        self.gradients = grad_output[0]
+    
+    def generate_gradcam(self, 
+                         input_image_norm: torch.Tensor,
+                         input_image_no_norm: torch.Tensor,
+                         target_class=None, 
+                         image_path=None):
+        """
+        Generate Grad-CAM for the specified input image and overlay it onto the non-normalized image.
+        
+        The function:
+          1. Runs a forward pass on the normalized image and backpropagates wrt the target class.
+          2. Computes the Grad-CAM map from stored gradients and activations.
+          3. Normalizes and resizes the Grad-CAM map, then creates a COLORMAP_JET heatmap.
+          4. Converts the non-normalized image to a NumPy array.
+          5. Builds an alpha channel for the heatmap and converts it to BGRA.
+          6. Alpha-blends the heatmap with the original image.
+          7. Saves the blended image to a specified directory using a UUID-generated filename.
+        
+        Returns:
+          save_path (str): The full path where the blended image is saved.
+          heatmap_bgr (np.array): The BGR heatmap.
+        """
+        
+        # -------------------------------------------------------------------------
+        # Helper functions
+        # -------------------------------------------------------------------------
+        
+        def _unpack_image_path(path):
+            if isinstance(path, (tuple, list)):
+                return path[0] if path else "Unknown"
+            return path
+        
+        def _forward_and_backprop(image_norm, class_idx=None):
+            # Move the image to the same device as the model
+            image_norm = image_norm.to(next(self.parameters()).device)
+            data_dict = {'image': image_norm}
+            self.eval()
+            # (For some detectors you might use self.forward(data_dict, inference=True) instead)
+            output = self.forward(data_dict, inference=True)
+            # Set default target class if needed
+            if class_idx is None or class_idx >= output['prob'].size(0):
+                class_idx = 0
+            self.zero_grad()
+            output['prob'][class_idx].backward(retain_graph=True)
+            return output
+        
+        def _compute_gradcam_map():
+            # Compute channel-wise weights by averaging gradients spatially
+            weights = torch.mean(self.gradients, dim=(2, 3), keepdim=True)
+            # Weighted sum of activations (across channels)
+            gradcam = torch.sum(weights * self.activations, dim=1).squeeze()
+            gradcam = torch.relu(gradcam)
+            return gradcam.detach().cpu().numpy()
+        
+        def _normalize_and_resize(gradcam_np, h, w):
+            # Normalize to [0, 1]
+            gradcam_np -= gradcam_np.min()
+            gradcam_np /= (gradcam_np.max() + 1e-5)
+            # Resize to the target dimensions
+            gradcam_resized = cv2.resize(gradcam_np, (w, h))
+            # Scale to 8-bit [0, 255]
+            gradcam_resized = np.uint8(255 * gradcam_resized)
+            return gradcam_resized
+        
+        def _create_colormap(gradcam_uint8):
+            # Create a heatmap using OpenCV's COLORMAP_JET
+            return cv2.applyColorMap(gradcam_uint8, cv2.COLORMAP_JET)
+        
+        def _convert_original_image(non_norm_tensor):
+            # Convert tensor (shape: (B, C, H, W) in [0,1]) to NumPy array (H, W, C) in [0,255]
+            arr = non_norm_tensor[0].detach().cpu().numpy().transpose(1, 2, 0)
+            arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8)
+            return arr
+        
+        def _build_alpha_heatmap(heatmap_bgr, gradcam_uint8):
+            # Convert the BGR heatmap to BGRA (adds an alpha channel)
+            heatmap_bgra = cv2.cvtColor(heatmap_bgr, cv2.COLOR_BGR2BGRA)
+            # Use the gradcam intensity to create the alpha channel
+            alpha_float = gradcam_uint8.astype(np.float32) / 255.0
+            # Original blending logic: 0.7*intensity + 0.2
+            alpha_float = 0.7 * alpha_float + 0.2
+            alpha_uint8 = (alpha_float * 255).astype(np.uint8)
+            heatmap_bgra[..., 3] = alpha_uint8
+            return heatmap_bgra
+        
+        def _blend_images(base_rgb, heatmap_bgra):
+            # Convert base image (RGB) to BGRA
+            base_bgr = cv2.cvtColor(base_rgb, cv2.COLOR_RGB2BGR)
+            base_bgra = cv2.cvtColor(base_bgr, cv2.COLOR_BGR2BGRA)
+            # Extract alpha channel from the heatmap
+            heatmap_alpha = heatmap_bgra[..., 3:4].astype(np.float32) / 255.0
+            inv_alpha = 1.0 - heatmap_alpha
+            # Blend the heatmap with the base image
+            blended = (heatmap_alpha * heatmap_bgra[..., :3].astype(np.float32) +
+                       inv_alpha * base_bgra[..., :3].astype(np.float32))
+            blended = blended.astype(np.uint8)
+            return blended
+        
+        # -------------------------------------------------------------------------
+        # MAIN FUNCTION BODY
+        # -------------------------------------------------------------------------
+        
+        # Unpack image_path (if provided) and create a unique filename using uuid
+        image_path = _unpack_image_path(image_path)
+        gradcam_image_name = uuid.uuid4().hex + ".png"
+        # Here you can change the save directory as needed.
+        gradcam_save_path = '/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/'
+        save_path = os.path.join(gradcam_save_path, gradcam_image_name)
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
+        # 1) Forward pass & backpropagation on the normalized image.
+        output = _forward_and_backprop(input_image_norm, target_class)
+        
+        # 2) Compute the Grad-CAM map from gradients & activations.
+        gradcam_np = _compute_gradcam_map()
+        
+        # 3) Normalize and resize the Grad-CAM map.
+        h, w = input_image_norm.shape[2], input_image_norm.shape[3]
+        gradcam_resized = _normalize_and_resize(gradcam_np, h, w)
+        
+        # 4) Create a COLORMAP_JET heatmap (BGR format) from the Grad-CAM map.
+        heatmap_bgr = _create_colormap(gradcam_resized)
+        
+        # 5) Convert the original (non-normalized) image to a NumPy RGB array.
+        original_img = _convert_original_image(input_image_no_norm)
+        
+        # 6) Build an alpha heatmap (convert the heatmap to BGRA with an alpha channel).
+        heatmap_bgra = _build_alpha_heatmap(heatmap_bgr, gradcam_resized)
+        
+        # 7) Alpha-blend the heatmap with the original image.
+        blended = _blend_images(original_img, heatmap_bgra)
+        
+        # 8) Save the blended output image.
+        cv2.imwrite(save_path, blended)
+        
+        return save_path, heatmap_bgr
+    
+
     def build_backbone(self, config):
         # prepare the backbone
         backbone_class = BACKBONE[config['backbone_name']]
@@ -300,18 +379,18 @@ class UCFDetector(AbstractDetector):
         metric_batch_dict = {'acc': acc, 'acc_spe': acc_spe, 'auc': auc, 'eer': eer, 'ap': ap}
         # we dont compute the video-level metrics for training
         return metric_batch_dict
-
-    def forward(self, data_dict: dict, inference=False) -> dict:
-        # split the features into the content and forgery
+    
+    def forward(self, data_dict: dict, inference=False, get_embeddings=False) -> dict:
+        # Split the features into the content and forgery
         features = self.features(data_dict)
         forgery_features, content_features = features['forgery'], features['content']
-        # get the prediction by classifier (split the common and specific forgery)
+        # Get the prediction by classifier (split the common and specific forgery)
         f_spe, f_share = self.classifier(forgery_features)
-
+    
         if inference:
-            # inference only consider share loss
+            # Inference only considers share loss
             out_sha, sha_feat = self.head_sha(f_share)
-            out_spe, spe_feat = self.head_spe(f_spe)
+            # Note: We don't need out_spe and spe_feat during inference unless required
             prob_sha = torch.softmax(out_sha, dim=1)[:, 1]
             self.prob.append(
                 prob_sha
@@ -320,22 +399,28 @@ class UCFDetector(AbstractDetector):
                 .cpu()
                 .numpy()
             )
-            self.label.append(
-                data_dict['label']
-                .detach()
-                .squeeze()
-                .cpu()
-                .numpy()
-            )
-            # deal with acc
-            _, prediction_class = torch.max(out_sha, 1)
-            common_label = (data_dict['label'] >= 1)
-            correct = (prediction_class == common_label).sum().item()
-            self.correct += correct
-            self.total += data_dict['label'].size(0)
-
-            pred_dict = {'cls': out_sha, 'feat': sha_feat}
-            return  pred_dict
+        
+            # Add conditional label processing
+            if 'label' in data_dict:
+                self.label.append(
+                    data_dict['label']
+                    .detach()
+                    .squeeze()
+                    .cpu()
+                    .numpy()
+                )
+                # Calculate accuracy only if label exists
+                _, prediction_class = torch.max(out_sha, 1)
+                common_label = (data_dict['label'] >= 1)
+                correct = (prediction_class == common_label).sum().item()
+                self.correct += correct
+                self.total += data_dict['label'].size(0)
+        
+            # Build the prediction dict
+            pred_dict = {'cls': out_sha, 'prob': prob_sha, 'feat': sha_feat}
+            if get_embeddings:
+                pred_dict['embeddings'] = sha_feat  # Include embeddings if requested
+            return pred_dict
 
         bs = f_share.size(0)
         # using idx aug in the training mode
@@ -352,6 +437,7 @@ class UCFDetector(AbstractDetector):
         
         # concat spe and share to obtain new_f_all
         f_all = torch.cat((f_spe, f_share), dim=1)
+
         
         # reconstruction loss
         f2, f1 = f_all.chunk(2, dim=0)
@@ -393,6 +479,67 @@ class UCFDetector(AbstractDetector):
             )
         }
         return pred_dict
+    
+    def predict_labels(self, data_dict: dict, threshold=0.5) -> list:
+        def calculate_highlighted_percentage(heatmap, threshold=100):
+            # Split channels
+            blue_channel, green_channel, red_channel = cv2.split(heatmap)
+            
+            # Red mask
+            red_mask = (red_channel >= threshold) & (blue_channel <= threshold) & (green_channel <= threshold)
+        
+            # Orange mask
+            orange_mask = (red_channel >= threshold) & (green_channel >= threshold) & (green_channel <= 200) & (blue_channel <= threshold)
+        
+            # Yellow mask
+            yellow_mask = (red_channel >= threshold) & (green_channel >= threshold) & (blue_channel <= threshold)
+        
+            # Combine all masks
+            combined_mask = red_mask | orange_mask | yellow_mask
+        
+            # Calculate percentage
+            total_pixels = heatmap.shape[0] * heatmap.shape[1]
+            highlighted_pixels = np.sum(combined_mask)
+            
+            return (highlighted_pixels / total_pixels) * 100.0
+
+        self.eval()
+        combined_results = []
+    
+        with torch.enable_grad():
+            outputs = self.forward(data_dict, inference=True)
+            prob = outputs['prob']  # Probability of being 'fake'
+            binary_preds = (prob >= threshold)
+            predictions_str = [
+                "UCF model detected forgery." if is_fake else "UCF model did not detect forgery."
+                for is_fake in binary_preds
+            ]
+    
+            batch_size = data_dict['image'].size(0)
+            
+            for i in range(batch_size):
+                # Normalized tensor (for forward pass / backprop)
+                input_image_norm = data_dict['image'][i].unsqueeze(0)
+                # Non-normalized tensor (for visualization)
+                input_image_no_norm = data_dict['image_no_norm'][i].unsqueeze(0)
+    
+                input_path = data_dict['image_path'][i][0]
+    
+                # Generate Grad-CAM
+                overlay_path, heatmap = self.generate_gradcam(
+                    input_image_norm,
+                    input_image_no_norm,
+                    target_class=None,  # or 1 if your "fake" label is 1
+                    image_path=input_path
+                )
+    
+                # Example of computing a metric from heatmap
+                percentage_red = calculate_highlighted_percentage(heatmap)
+    
+                combined_results.append(
+                    (overlay_path, float(prob[i]), predictions_str[i], percentage_red)
+                )
+        return combined_results
 
 def sn_double_conv(in_channels, out_channels):
     return nn.Sequential(

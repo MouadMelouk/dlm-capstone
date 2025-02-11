@@ -48,7 +48,7 @@ from dataset.abstract_dataset import DeepfakeAbstractBaseDataset
 
 # Define face detector and predictor models
 face_detector = dlib.get_frontal_face_detector()
-predictor_path = '/scratch/mmm9912/Capstone/dlm-repo/capstone_code/DeepfakeBench-main/training/dataset/shape_predictor_81_face_landmarks.dat.dat'
+predictor_path = '/scratch/mmm9912/Capstone/dlm-repo/capstone_code/DeepfakeBench-main/training/dataset/shape_predictor_81_face_landmarks.dat'
 face_predictor = dlib.shape_predictor(predictor_path)
 
 

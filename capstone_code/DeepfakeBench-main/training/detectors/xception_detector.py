@@ -291,15 +291,27 @@ class XceptionDetector(AbstractDetector):
 
     
     def predict_labels(self, data_dict: dict, threshold=0.5) -> list:
-        def calculate_red_percentage(heatmap, red_threshold=150, non_red_threshold=100):
-            # same as before
+        def calculate_highlighted_percentage(heatmap, threshold=100):
+            # Split channels
             blue_channel, green_channel, red_channel = cv2.split(heatmap)
-            red_mask = ((red_channel >= red_threshold) &
-                        (blue_channel <= non_red_threshold) &
-                        (green_channel <= non_red_threshold))
+            
+            # Red mask
+            red_mask = (red_channel >= threshold) & (blue_channel <= threshold) & (green_channel <= threshold)
+        
+            # Orange mask
+            orange_mask = (red_channel >= threshold) & (green_channel >= threshold) & (green_channel <= 200) & (blue_channel <= threshold)
+        
+            # Yellow mask
+            yellow_mask = (red_channel >= threshold) & (green_channel >= threshold) & (blue_channel <= threshold)
+        
+            # Combine all masks
+            combined_mask = red_mask | orange_mask | yellow_mask
+        
+            # Calculate percentage
             total_pixels = heatmap.shape[0] * heatmap.shape[1]
-            red_pixels = np.sum(red_mask)
-            return (red_pixels / total_pixels) * 100.0
+            highlighted_pixels = np.sum(combined_mask)
+            
+            return (highlighted_pixels / total_pixels) * 100.0
 
         self.eval()
         combined_results = []
@@ -332,7 +344,7 @@ class XceptionDetector(AbstractDetector):
                 )
     
                 # Example of computing a metric from heatmap
-                percentage_red = calculate_red_percentage(heatmap)
+                percentage_red = calculate_highlighted_percentage(heatmap)
     
                 combined_results.append(
                     (overlay_path, float(prob[i]), predictions_str[i], percentage_red)
