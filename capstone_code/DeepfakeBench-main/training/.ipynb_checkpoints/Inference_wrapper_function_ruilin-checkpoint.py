@@ -19,6 +19,9 @@ import numpy as np
 from PIL import Image
 import torchvision.transforms as T
 
+import argparse
+import sys
+
 def run_inference_on_images_with_old_preprocess(
     model_name: str,
     image_paths: list,
@@ -249,17 +252,17 @@ def run_inference_on_images_with_old_preprocess_core(
     return pred
 
 
-import argparse
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run inference on images with a specified model.")
     parser.add_argument("model_name", type=str, choices=["ucf", "xception", "spsl"], 
                         help="Name of the model to use for inference. Choices: 'ucf', 'xception', 'spsl'.")
+    parser.add_argument("image_paths", nargs="+", type=str, 
+                        help="Paths to the images for inference. Provide one or more image paths.")
+
     args = parser.parse_args()
 
-    test_paths = [
-        ["./tomcruisedeepfake.png"]
-    ]
+    # Wrap each image path in a list, maintaining the original nested structure
+    test_paths = [[path] for path in args.image_paths]
 
     Results = run_inference_on_images_with_old_preprocess(
         model_name=args.model_name,
@@ -267,4 +270,9 @@ if __name__ == "__main__":
         cuda=True,
         manual_seed=42,
     )
-    print("Results:", Results)
+
+    # Filter and print only the desired output
+    for line in str(Results).split("\n"):
+        if line.startswith("[('/"):
+            print(line)
+            break  # Assuming there's only one such line
