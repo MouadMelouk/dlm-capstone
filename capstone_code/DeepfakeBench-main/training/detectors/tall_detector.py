@@ -1,4 +1,4 @@
-"""
+'''
 # author: Kangran Zhao
 # email: kangranzhao@link.cuhk.edu.cn
 # date: 2023-0822
@@ -23,7 +23,7 @@ Reference:
   pages={22658--22668},
   year={2023}
 }
-"""
+'''
 
 import logging
 
@@ -38,6 +38,11 @@ from metrics.base_metrics_class import calculate_metrics_for_train
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from torch.hub import load_state_dict_from_url
+import cv2
+import os
+import uuid
+import numpy as np
+import torch.nn.functional as F
 
 from .base_detector import AbstractDetector
 
@@ -50,6 +55,8 @@ class TALLDetector(AbstractDetector):
         super().__init__()
         self.model = self.build_backbone(config)
         self.loss_func = self.build_loss(config)
+        self.prob, self.label = [], []
+        self.correct, self.total = 0, 0
 
     def build_backbone(self, config):
         model_kwargs = dict(num_classes=config['num_classes'], embed_dim=config['embed_dim'],
@@ -60,7 +67,7 @@ class TALLDetector(AbstractDetector):
                             drop_path_rate=config['drop_path_rate'], use_checkpoint=False, bottleneck=False,
                             duration=config['clip_size'])
         default_cfg = {
-            'url': config['pretrained'],
+            'url': 'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_base_patch4_window7_224_22k.pth',
             'num_classes': 1000, 'input_size': (3, 224, 224), 'pool_size': None,
             'crop_pct': .9, 'interpolation': 'bicubic',
             'mean': IMAGENET_DEFAULT_MEAN, 'std': IMAGENET_DEFAULT_STD,
@@ -68,23 +75,282 @@ class TALLDetector(AbstractDetector):
         backbone = SwinTransformer(img_size=config['resolution'], **model_kwargs)
         backbone.default_cfg = default_cfg
         load_pretrained(backbone, num_classes=config['num_classes'], in_chans=model_kwargs.get('in_chans', 3),
-                        filter_fn=_conv_filter, img_size=config['resolution'], pretrained_window_size=7,
-                        pretrained_model='')
+                        filter_fn=_conv_filter, img_size=config['resolution'], pretrained_window_size=7, pretrained_model='')
 
         return backbone
+
+    def generate_attentionmap(self, 
+                              input_image_norm: torch.Tensor,
+                              input_image_no_norm: torch.Tensor,
+                              target_class=None, 
+                              image_path=None):
+        """
+        Generate an attention map by averaging attention weights across
+        all blocks in the last layer of the Swin Transformer.
+        """
+        import cv2
+        import os
+        import uuid
+        import math
+        import numpy as np
+        import torch.nn.functional as F
+        
+        self.model.eval()
+        device = next(self.model.parameters()).device
+        input_image_norm = input_image_norm.to(device)
+        
+        # List to capture attention weights from each block in the last layer.
+        attention_weights_list = []
+        
+        # Identify the last layer of the Swin model
+        last_layer_idx = len(self.model.layers) - 1
+        last_layer = self.model.layers[last_layer_idx]
+        
+        # Hook function to capture attention weights for each block
+        def make_hook_fn():
+            def hook_fn(module, input, output):
+                # We assume the attention module stores its computed weights in "attn_weights".
+                if hasattr(module, 'attn_weights') and module.attn_weights is not None:
+                    attention_weights_list.append(module.attn_weights.detach())
+            return hook_fn
+        
+        # Register a forward hook on each block's attention module in the last layer
+        hooks = []
+        for block in last_layer.blocks[-5:]:
+            attention_module = block.attn
+            h = attention_module.register_forward_hook(make_hook_fn())
+            hooks.append(h)
+        
+        # Forward pass with the full video tensor
+        with torch.no_grad():
+            data_dict_forward = {'image': input_image_norm}
+            _ = self.forward(data_dict_forward)
+        
+        # Remove all hooks
+        for h in hooks:
+            h.remove()
+        
+        # Check if we captured any attention weights
+        if not attention_weights_list:
+            raise ValueError("No attention weights captured from the last layer.")
+        
+        # 1) Stack all attention weights from each block, shape each is (num_windows*B, num_heads, N, N)
+        # 2) Then average across blocks (dim=0)
+        attn = torch.stack(attention_weights_list, dim=0).mean(dim=0)  # shape: (num_windows*B, num_heads, N, N)
+        
+        B_, num_heads, N, _ = attn.shape
+        window_size = int(math.sqrt(N))
+        
+        # Instead of averaging everything, let's do a "mean over heads" and then
+        # a "max across tokens" to preserve contrast.
+        attn_avg = attn.mean(dim=1)                # shape: (B_, N, N)
+        attn_map = attn_avg.max(dim=-1).values     # shape: (B_, N)
+        attn_map = attn_map.view(B_, window_size, window_size)  # (B_, ws, ws)
+        
+        # Get the patch grid resolution from the last layer
+        H_layer, W_layer = last_layer.input_resolution
+        num_windows_h = H_layer // window_size
+        num_windows_w = W_layer // window_size
+        batch_size = input_image_norm.size(0)
+        
+        # Reassemble the windowed attention maps into one full map
+        attn_map = attn_map.view(batch_size, num_windows_h, num_windows_w, window_size, window_size)
+        attn_map = attn_map.permute(0, 1, 3, 2, 4).contiguous()  # shape: (B, H_layer, W_layer)
+        attn_map = attn_map.view(batch_size, H_layer, W_layer)
+        
+        # Convert the non–normalized video (5D) into the thumbnail
+        B, T, C, H_orig, W_orig = input_image_no_norm.shape
+        thumbnail_input = input_image_no_norm.view(B, T * C, H_orig, W_orig)
+        thumbnail = self.model.create_thumbnail(thumbnail_input)  # (B, 3, H_thumb, W_thumb)
+        H_thumb, W_thumb = thumbnail.shape[2], thumbnail.shape[3]
+        
+        # Upsample the attention map to match the thumbnail size
+        attn_upsampled = F.interpolate(
+            attn_map.unsqueeze(1).float(), 
+            size=(H_thumb, W_thumb), 
+            mode='bicubic', 
+            align_corners=False
+        ).squeeze().cpu().numpy()
+        
+        # Normalize the upsampled attention map to [0, 1]
+        attn_upsampled = (attn_upsampled - attn_upsampled.min()) / (
+            attn_upsampled.max() - attn_upsampled.min() + 1e-8
+        )
+        heatmap = np.uint8(255 * attn_upsampled)
+        
+        # Create a colored heatmap
+        heatmap_colored = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+        
+        # Convert the thumbnail to a NumPy image (BGR)
+        thumb_img = thumbnail.squeeze().permute(1, 2, 0).cpu().numpy()
+        thumb_img = (thumb_img * 255).astype(np.uint8)
+        thumb_img = cv2.cvtColor(thumb_img, cv2.COLOR_RGB2BGR)
+        
+        # Overlay the heatmap
+        superimposed = cv2.addWeighted(thumb_img, 0.5, heatmap_colored, 0.5, 0)
+        
+        # Save to disk
+        attention_image_path = uuid.uuid4().hex + ".png"
+        save_dir = '/scratch/rz2288/DeepfakeBench/gradcam_output/test0215_2/'
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, attention_image_path)
+        
+        if np.isnan(superimposed).any() or np.isinf(superimposed).any():
+            print("Error: Image contains NaN or Inf values")
+        success = cv2.imwrite(save_path, superimposed)
+        if not success:
+            print("Error: Failed to save image!")
+            blank_image = np.zeros((448, 448, 3), dtype=np.uint8)
+            cv2.imwrite(save_path, blank_image)
+        if superimposed is None or superimposed.size == 0:
+            print("Error: superimposed is empty!")
+        
+        return save_path, heatmap_colored
+    
+
+    
+    def generate_attentionmap_singlelayer(self, 
+                              input_image_norm: torch.Tensor,
+                              input_image_no_norm: torch.Tensor,
+                              target_class=None, 
+                              image_path=None):
+        """
+        Generate an attention map using the Swin Transformer's attention weights
+        from a full video input (e.g., (1, 4, 3, 224, 224)) and overlay it on the
+        combined (thumbnail) original image.
+        
+        The function:
+          1. Registers a hook on a chosen attention module to capture attention weights.
+          2. Forwards the full video tensor through the detector.
+          3. Processes the captured attention weights into a spatial map.
+          4. Converts the non–normalized video (5D) into a 4D tensor and calls create_thumbnail.
+          5. Upsamples the attention map to the thumbnail size, applies a colormap,
+             overlays the heatmap on the thumbnail, and saves the result.
+        
+        Returns:
+            tuple: (save_path, heatmap_colored)
+        """
+        import cv2
+        import os
+        import uuid
+        import numpy as np
+        import torch.nn.functional as F
+    
+        # Ensure the model is in eval mode and on the correct device.
+        #print(self.model)
+        self.model.eval()
+        device = next(self.model.parameters()).device
+        input_image_norm = input_image_norm.to(device)
+    
+        # List to capture attention weights.
+        attention_weights = []
+    
+        # Hook function to capture attention weights.
+        def hook_fn(module, input, output):
+            # We assume the attention module stores its computed weights in "attn_weights".
+            if hasattr(module, 'attn_weights') and module.attn_weights is not None:
+                attention_weights.append(module.attn_weights.detach())
+    
+        # Select a module from a specific block.
+        layer_idx = 2
+        block_idx = -1
+        selected_layer = self.model.layers[layer_idx]
+        selected_block = selected_layer.blocks[block_idx]
+        attention_module = selected_block.attn
+    
+        # Register the forward hook.
+        handle = attention_module.register_forward_hook(hook_fn)
+    
+        # Forward pass with the full video tensor.
+        with torch.no_grad():
+            data_dict_forward = {'image': input_image_norm}
+            _ = self.forward(data_dict_forward)
+    
+        # Remove the hook.
+        handle.remove()
+    
+        if not attention_weights:
+            raise ValueError("No attention weights captured.")
+    
+        # Process the captured attention weights.
+        # Expected shape: (num_windows * B, num_heads, N, N)
+        attn = attention_weights[0]
+        B_, num_heads, N, _ = attn.shape
+        window_size = int(math.sqrt(N))
+    
+        # Average over heads and then average across tokens (diagonals).
+        #attn_avg = attn.mean(dim=1)           # Shape: (B_, N, N)
+        #attn_map = attn_avg.mean(dim=-1)        # Shape: (B_, N)
+        attn_avg = attn.mean(dim=1)                # shape: (B_, N, N)
+        attn_map = attn_avg.max(dim=-1).values     # shape: (B_, N)
+        attn_map = attn_map.view(B_, window_size, window_size)  # (B_, ws, ws)
+    
+        # Get the patch grid resolution from the selected layer.
+        H_layer, W_layer = selected_layer.input_resolution  # e.g., (56, 56)
+        num_windows_h = H_layer // window_size
+        num_windows_w = W_layer // window_size
+        batch_size = input_image_norm.size(0)
+    
+        # Reshape and reassemble the windowed attention maps into one full map.
+        attn_map = attn_map.view(batch_size, num_windows_h, num_windows_w, window_size, window_size)
+        attn_map = attn_map.permute(0, 1, 3, 2, 4).contiguous()  # Now shape: (B, H_layer, W_layer)
+        attn_map = attn_map.view(batch_size, H_layer, W_layer)
+    
+        # --- Combine frames for visualization ---
+        # The detector's create_thumbnail expects a 4D tensor (B, (th*tw*c), H, W)
+        # so we first merge the temporal dimension and channel dimension.
+        B, T, C, H_orig, W_orig = input_image_no_norm.shape
+        thumbnail_input = input_image_no_norm.view(B, T * C, H_orig, W_orig)
+        # Now call create_thumbnail (which will also perform resizing if necessary)
+        thumbnail = self.model.create_thumbnail(thumbnail_input)  # shape: (B, 3, H_thumb, W_thumb)
+        H_thumb, W_thumb = thumbnail.shape[2], thumbnail.shape[3]
+    
+        # Upsample the attention map to match the thumbnail size.
+        attn_upsampled = F.interpolate(
+            attn_map.unsqueeze(1).float(), 
+            size=(H_thumb, W_thumb), 
+            mode='bicubic', 
+            align_corners=False
+        ).squeeze().cpu().numpy()
+    
+        # Normalize the upsampled attention map to [0, 1] and convert to uint8.
+        attn_upsampled = (attn_upsampled - attn_upsampled.min()) / (attn_upsampled.max() - attn_upsampled.min() + 1e-8)
+        heatmap = np.uint8(255 * attn_upsampled)
+    
+        # Create a colored heatmap.
+        heatmap_colored = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+    
+        # Convert the thumbnail (non–normalized video) to a NumPy image in BGR format.
+        thumb_img = thumbnail.squeeze().permute(1, 2, 0).cpu().numpy()
+        thumb_img = (thumb_img * 255).astype(np.uint8)
+        thumb_img = cv2.cvtColor(thumb_img, cv2.COLOR_RGB2BGR)
+    
+        # Overlay the heatmap onto the thumbnail.
+        superimposed = cv2.addWeighted(thumb_img, 0.5, heatmap_colored, 0.5, 0)
+    
+        attention_image_path = uuid.uuid4().hex + ".png"
+        save_dir = '/scratch/rz2288/DeepfakeBench/gradcam_output/test0222_11/'  # Update as needed.
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, attention_image_path)
+        if np.isnan(superimposed).any() or np.isinf(superimposed).any():
+            print("Error: Image contains NaN or Inf values")
+        success = cv2.imwrite(save_path, superimposed)
+    
+        return save_path, heatmap_colored
 
     def build_loss(self, config):
         # prepare the loss function
         loss_class = LOSSFUNC[config['loss_func']]
         loss_func = loss_class()
-
         return loss_func
 
     def features(self, data_dict: dict) -> torch.tensor:
+        # STIL requires the input with the shape of (n, t*c, h, w), where n is the batch_size, t is num_segment
+        #print(data_dict['image'].shape)
         bs, t, c, h, w = data_dict['image'].shape
+
         inputs = data_dict['image'].view(bs, t * c, h, w)
         pred = self.model(inputs)
-
         return pred
 
     def classifier(self, features: torch.tensor):
@@ -95,24 +361,101 @@ class TALLDetector(AbstractDetector):
         pred = pred_dict['cls']
         loss = self.loss_func(pred, label)
         loss_dict = {'overall': loss}
-
         return loss_dict
 
     def get_train_metrics(self, data_dict: dict, pred_dict: dict) -> dict:
         label = data_dict['label']
         pred = pred_dict['cls']
+        # compute metrics for batch data
         auc, eer, acc, ap = calculate_metrics_for_train(label.detach(), pred.detach())
         metric_batch_dict = {'acc': acc, 'auc': auc, 'eer': eer, 'ap': ap}
-
+        # we dont compute the video-level metrics for training
         return metric_batch_dict
 
     def forward(self, data_dict: dict, inference=False) -> dict:
+        # get the prediction by backbone
         pred = self.features(data_dict)
+        # get the probability of the pred
         prob = torch.softmax(pred, dim=1)[:, 1]
+        # build the prediction dict for each output
         pred_dict = {'cls': pred, 'prob': prob, 'feat': prob}
+        if inference:
+            self.prob.extend(
+                pred_dict['prob']
+                .detach()
+                .squeeze()
+                .cpu()
+                .numpy()
+            )
+            self.label.extend(
+                data_dict['label']
+                .detach()
+                .squeeze()
+                .cpu()
+                .numpy()
+            )
+            # deal with acc
+            _, prediction_class = torch.max(pred, 1)
+            correct = (prediction_class == data_dict['label']).sum().item()
+            self.correct += correct
+            self.total += data_dict['label'].size(0)
 
         return pred_dict
 
+
+    def predict_labels(self, data_dict: dict, threshold=0.5) -> list:
+        """
+        For each video in the batch, forward the entire set of frames (e.g. shape (1,4,3,224,224))
+        and generate a single attention overlay (thumbnail) for the video.
+        Then, compute the red percentage from the heatmap and return the results.
+        """
+        def calculate_red_percentage(heatmap, red_threshold=150, non_red_threshold=100):
+            # Compute percentage of strongly red pixels in the heatmap.
+            blue_channel, green_channel, red_channel = cv2.split(heatmap)
+            red_mask = ((red_channel >= red_threshold) &
+                        (blue_channel <= non_red_threshold) &
+                        (green_channel <= non_red_threshold))
+            total_pixels = heatmap.shape[0] * heatmap.shape[1]
+            red_pixels = np.sum(red_mask)
+            return (red_pixels / total_pixels) * 100.0
+    
+        self.eval()
+        combined_results = []
+    
+        with torch.enable_grad():
+            outputs = self.forward(data_dict, inference=False)
+            prob = outputs['prob']  # Probability of being 'fake'
+            binary_preds = (prob >= threshold)
+            predictions_str = [
+                "Tall model detected forgery." if is_fake else "Tall model did not detect forgery."
+                for is_fake in binary_preds
+            ]
+    
+            batch_size = data_dict['image'].size(0)
+            # data_dict['image'] and data_dict['image_no_norm'] are assumed to be 5D: (B, T, C, H, W)
+            for i in range(batch_size):
+                # Forward the entire video (all frames together)
+                input_video_norm = data_dict['image'][i].unsqueeze(0)       # shape (1, 4, 3, 224, 224)
+                input_video_no_norm = data_dict['image_no_norm'][i].unsqueeze(0)  # shape (1, 4, 3, 224, 224)
+    
+                # Use the provided image path (or generate one if needed)
+                input_path = data_dict['image_path'][i][0]
+    
+                # Generate the attention overlay for the entire video
+                overlay_path, heatmap = self.generate_attentionmap_singlelayer(
+                    input_video_norm,
+                    input_video_no_norm,
+                    target_class=None,  # Not used here
+                    image_path=input_path
+                )
+    
+                percentage_red = calculate_red_percentage(heatmap)
+                combined_results.append(
+                    (overlay_path, float(prob[i]), predictions_str[i], percentage_red)
+                )
+        return combined_results
+
+    
 
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
@@ -212,6 +555,8 @@ class WindowAttention(nn.Module):
         trunc_normal_(self.relative_position_bias_table, std=.02)
         self.softmax = nn.Softmax(dim=-1)
 
+        self.attn_weights = None  # Add this line to store attention weights
+
     def forward(self, x, mask=None):
         """
         Args:
@@ -237,6 +582,9 @@ class WindowAttention(nn.Module):
             attn = self.softmax(attn)
         else:
             attn = self.softmax(attn)
+
+        #attn = self.softmax(attn)
+        self.attn_weights = attn  # Store attention weights after softmax
 
         attn = self.attn_drop(attn)
 
@@ -813,6 +1161,7 @@ def load_pretrained(model, cfg=None, num_classes=1000, in_chans=3, filter_fn=Non
             conv1_weight *= (3 / float(in_chans))
             conv1_weight = conv1_weight.to(conv1_type)
             state_dict[conv1_name + '.weight'] = conv1_weight
+
 
     classifier_name = cfg['classifier']
     if num_classes == 1000 and cfg['num_classes'] == 1001:
