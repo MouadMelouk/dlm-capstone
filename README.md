@@ -70,6 +70,37 @@ Change the variable `datasets_base_path` to the **desired folder path** where yo
 datasets_base_path = "/your/desired/folder/path"
 ```
 
+#### Wrapper function for tall detector
+
+Arugments for tall detector's wrapper function
+
+```python
+res = run_inference_on_videos(
+        number_grids=8,
+        #the number of thumbnail grid (number of clips the video is divided into), default in the paper is 8
+
+        detector_paths="/scratch/rz2288/DeepfakeBench/training/config/detector/tall.yaml",
+        weights_paths="/scratch/rz2288/DeepfakeBench/training/weights/tall_trainFF_testCDF.pth",
+        video_paths=test_paths,
+        cuda=True,
+        manual_seed=42,
+
+        runninginference = False,
+        # only false for spsl+tall due to original code integrated label and accuracy calculation in class function
+
+        base_path_for_frames = "outputframes_0222_1"
+        #path where you want to store the frames
+    )
+```
+
+
+#### Attention map directory
+
+Modify inside tall_detector.py, find function generate_attentionmap:
+
+```python
+save_dir = '/scratch/rz2288/DeepfakeBench/gradcam_output/test0215_2/'
+```
 
 ### Chaimae Changes
 
