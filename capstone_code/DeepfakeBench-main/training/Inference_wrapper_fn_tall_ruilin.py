@@ -291,7 +291,9 @@ def run_inference_on_videos(
         total_score=0
         for i in range(number_grids):
             total_score+=res[i][0][1]
-        if total_score>number_grids*0.5:
+
+        total_score = total_score/number_grids
+        if total_score> 0.5:
             elem = (total_score, "Tall model detected forgery.")
         else:
             elem = (total_score,"Tall model did not detect forgery.")
@@ -322,6 +324,5 @@ if __name__ == "__main__":
     )
     for i in res:
         print(i)
-
 
 
