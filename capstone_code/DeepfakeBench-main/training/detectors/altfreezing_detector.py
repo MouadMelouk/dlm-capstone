@@ -236,51 +236,6 @@ class AltFreezingDetector(AbstractDetector):
             torch.Tensor: Grad-CAM heatmap of shape (B, T, H, W)
         """
         print("Inside compute_gradcam()...")  # Debugging
-        
-        feature_maps, gradients = self.resnet.get_gradients()
-        
-        if feature_maps is None or gradients is None:
-            raise ValueError("Grad-CAM features or gradients not available!")
-        
-        # Compute weights using Global Average Pooling over the channel dimension
-        weights = torch.mean(gradients, dim=1, keepdim=True)  # (B, 1, T, H, W)
-        
-        # Weighted sum of feature maps over the channels
-        cam = torch.sum(weights * feature_maps, dim=1)  # (B, T, H, W)
-        
-        # Apply ReLU to remove negative influences
-        cam = torch.clamp(cam, min=0)
-        
-        # Normalize each video in the batch to [0, 1]
-        cam_min = cam.view(cam.shape[0], -1).min(dim=1, keepdim=True)[0].unsqueeze(-1)
-        cam_max = cam.view(cam.shape[0], -1).max(dim=1, keepdim=True)[0].unsqueeze(-1)
-        cam = (cam - cam_min) / (cam_max - cam_min + 1e-8)
-        
-        # Aggregate across time if desired
-        if aggregation == "mean":
-            return cam.mean(dim=1)  # (B, H, W)
-        elif aggregation == "max":
-            return cam.max(dim=1)[0]  # (B, H, W)
-        elif aggregation == "sum":
-            return cam.sum(dim=1)  # (B, H, W)
-        elif aggregation == "framewise":
-            return cam  # (B, T, H, W)
-        else:
-            raise ValueError(f"Unknown aggregation mode: {aggregation}")
-
-
-    def compute_gradcam(self, aggregation="mean"):
-        """
-        Compute Grad-CAM from stored features and gradients.
-        
-        Args:
-            aggregation (str): How to aggregate heatmap over time.
-                              Options: "mean", "max", "sum", "framewise"
-        
-        Returns:
-            torch.Tensor: Grad-CAM heatmap of shape (B, T, H, W)
-        """
-        print("Inside compute_gradcam()...")  # Debugging
     
         feats, grads = self.resnet.get_layer_features_and_grads("s5")
         print("Gradients - mean:", grads.mean().item(), "max:", grads.max().item())
