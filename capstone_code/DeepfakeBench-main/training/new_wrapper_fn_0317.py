@@ -263,30 +263,36 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run inference on images with a specified model.")
     parser.add_argument("model_name", type=str, choices=["ucf", "xception", "spsl"], 
                         help="Name of the model to use for inference. Choices: 'ucf', 'xception', 'spsl'.")
+    parser.add_argument("image_paths", nargs="+", type=str, 
+                        help="Paths to the images for inference. Provide one or more image paths.")
+
     args = parser.parse_args()
+
+    # Wrap each image path in a list, maintaining the original nested structure
+    test_paths = [[path] for path in args.image_paths]
 
     
 
     # Path to your JSON file
-    json_file_path = "/scratch/rz2288/DeepfakeBench/preprocessing/dataset_json/Celeb-DF-v1.json"
+    #json_file_path = "/scratch/rz2288/DeepfakeBench/preprocessing/dataset_json/Celeb-DF-v1.json"
     
-    with open(json_file_path, "r") as f:
+    #with open(json_file_path, "r") as f:
         data = json.load(f)
     
     # Extract filenames from JSON
-    FF_Fsh_test_paths = list(data["Celeb-DF-v1"]["CelebDFv1_fake"]["test"].keys())
+    #FF_Fsh_test_paths = list(data["Celeb-DF-v1"]["CelebDFv1_fake"]["test"].keys())
     
     # Construct absolute file paths
-    all_test_paths = ["/scratch/rz2288/DeepfakeBench/datasets/rgb/Celeb-DF-v1/Celeb-synthesis/" + filename + ".mp4" for filename in FF_Fsh_test_paths][:5]
+    #all_test_paths = ["/scratch/rz2288/DeepfakeBench/datasets/rgb/Celeb-DF-v1/Celeb-synthesis/" + filename + ".mp4" for filename in FF_Fsh_test_paths][:5]
 
-    output_folder = "output_frames_0308_1"
-    num_frames = 5  # Number of random frames to extract from each video
+    #output_folder = "output_frames_0308_1"
+    #num_frames = 5  # Number of random frames to extract from each video
 
-    frame_paths = process_videos(all_test_paths, output_folder, num_frames)
+    #frame_paths = process_videos(all_test_paths, output_folder, num_frames)
 
 
     # Wrap each image path in a list, maintaining the original nested structure
-    test_paths = [["/scratch/rz2288/DeepfakeBench/"+path] for path in frame_paths]
+    #test_paths = [["/scratch/rz2288/DeepfakeBench/"+path] for path in frame_paths]
 
     Results = run_inference_on_images_with_old_preprocess(
         model_name=args.model_name,

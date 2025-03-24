@@ -265,28 +265,28 @@ def run_inference_on_videos_with_old_preprocess(model_name,
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run inference on images with a specified model.")
+    parser = argparse.ArgumentParser(description="Run inference on videos with a specified model.")
     parser.add_argument("model_name", type=str, choices=["ucf", "xception", "spsl"], 
                         help="Name of the model to use for inference. Choices: 'ucf', 'xception', 'spsl'.")
     parser.add_argument("video_paths", nargs="+", type=str, 
-                        help="Paths to the images for inference. Provide one or more image paths.")
+                        help="Paths to the video for inference.")
 
     args = parser.parse_args()
 
     # Path to your JSON file
-    json_file_path = "/scratch/rz2288/DeepfakeBench/preprocessing/dataset_json/Celeb-DF-v1.json"
+    #json_file_path = "/scratch/rz2288/DeepfakeBench/preprocessing/dataset_json/Celeb-DF-v1.json"
     
-    with open(json_file_path, "r") as f:
-        data = json.load(f)
+    #with open(json_file_path, "r") as f:
+        #data = json.load(f)
     
     # Extract filenames from JSON
-    FF_Fsh_test_paths = list(data["Celeb-DF-v1"]["CelebDFv1_fake"]["test"].keys())
+    #FF_Fsh_test_paths = list(data["Celeb-DF-v1"]["CelebDFv1_fake"]["test"].keys())
     
     # Construct absolute file paths
     #all_test_paths = ["/scratch/rz2288/DeepfakeBench/datasets/rgb/Celeb-DF-v1/Celeb-synthesis/" + filename + ".mp4" for filename in FF_Fsh_test_paths][:3]
         
     # Wrap each image path in a list, maintaining the original nested structure
-    test_paths = [[path] for path in args.video_paths]
+    all_test_paths = args.video_paths
 
     Results = run_inference_on_videos_with_old_preprocess(
         model_name=args.model_name,
