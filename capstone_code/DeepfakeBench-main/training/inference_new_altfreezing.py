@@ -19,6 +19,9 @@ import numpy as np
 from PIL import Image
 import torchvision.transforms as T
 import dlib
+import json 
+from pathlib import Path
+from sklearn.metrics import roc_auc_score
 
 
 #new function for video detectors 
@@ -32,9 +35,120 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
 import dlib
+from imutils import face_utils
+from skimage import transform as trans
+from typing import Tuple, Union
+from preprocessing.preprocess import get_keypts
 
 from detectors import DETECTOR  # Make sure this is importable
 # from .utils import ... (if you have any local imports)
+
+def extract_aligned_face_dlib(
+    face_detector, predictor, image: np.ndarray, res: int = 256, mask=None
+) -> Tuple[Union[np.ndarray, None], Union[np.ndarray, None], Union[np.ndarray, None]]:
+    """
+    Detects, aligns, and crops the largest face in an image using 5-point landmarks.
+    """
+    def img_align_crop(img, landmark=None, outsize=(256, 256), scale=1.3, mask=None):
+        """
+        Align and crop the face using 5 facial landmarks.
+        """
+        # Target positions of 5 landmarks in a standard aligned face
+        dst = np.array([
+            [30.2946, 51.6963],
+            [65.5318, 51.5014],
+            [48.0252, 71.7366],
+            [33.5493, 92.3655],
+            [62.7299, 92.2041]], dtype=np.float32)
+
+        if outsize[1] == 112:
+            dst[:, 0] += 8.0  # Shift X-coordinates for standard alignment
+
+        # Scale transformation based on output size
+        dst[:, 0] = dst[:, 0] * outsize[0] / 112
+        dst[:, 1] = dst[:, 1] * outsize[1] / 112
+
+        # Apply scale margin
+        margin_rate = scale - 1
+        x_margin = outsize[0] * margin_rate / 2.0
+        y_margin = outsize[1] * margin_rate / 2.0
+        dst[:, 0] += x_margin
+        dst[:, 1] += y_margin
+
+        # Normalize back after adding margins
+        dst[:, 0] *= outsize[0] / (outsize[0] + 2 * x_margin)
+        dst[:, 1] *= outsize[1] / (outsize[1] + 2 * y_margin)
+
+        # Compute affine transform from detected landmarks → target positions
+        src = landmark.astype(np.float32)
+        tform = trans.SimilarityTransform()
+        tform.estimate(src, dst)
+        M = tform.params[0:2, :]  # 2x3 affine transformation matrix
+
+        # Apply affine transformation
+        aligned_face = cv2.warpAffine(img, M, (outsize[1], outsize[0]))
+
+        if mask is not None:
+            mask = cv2.warpAffine(mask, M, (outsize[1], outsize[0]))
+            return aligned_face, mask
+        return aligned_face, None
+
+    # Convert image to RGB (dlib expects RGB)
+    rgb_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    # Detect faces
+    faces = face_detector(rgb_img, 1)
+    if len(faces) == 0:
+        return None, None, None  # No face detected
+
+    # Choose the **largest face**
+    face = max(faces, key=lambda rect: rect.width() * rect.height())
+
+    # Extract **5-point landmarks**
+    landmarks = get_keypts(rgb_img, face, predictor, face_detector)
+
+    # Align and crop the face
+    aligned_face, mask_face = img_align_crop(rgb_img, landmarks, outsize=(res, res), mask=mask)
+    aligned_face = cv2.cvtColor(aligned_face, cv2.COLOR_RGB2BGR)  # Convert back to BGR
+
+    # Extract additional landmarks from the aligned face
+    face_align = face_detector(aligned_face, 1)
+    if len(face_align) == 0:
+        return None, None, None  # Alignment failed
+
+    aligned_landmark = predictor(aligned_face, face_align[0])
+    aligned_landmark = face_utils.shape_to_np(aligned_landmark)
+
+    return aligned_face, aligned_landmark, mask_face
+
+
+'''def enlarge_bbox(face, scale=1.7, image_shape=None):
+    """
+    Expands the detected face bounding box by a scaling factor.
+    Ensures the new bounding box does not exceed image boundaries.
+    """
+    width = face.right() - face.left()
+    height = face.bottom() - face.top()
+    cx = (face.left() + face.right()) / 2
+    cy = (face.top() + face.bottom()) / 2
+
+    new_half_w = scale * width / 2
+    new_half_h = scale * height / 2
+
+    left = int(cx - new_half_w)
+    right = int(cx + new_half_w)
+    top = int(cy - new_half_h)
+    bottom = int(cy + new_half_h)
+
+    if image_shape is not None:
+        h_img, w_img = image_shape[:2]
+        left = max(left, 0)
+        top = max(top, 0)
+        right = min(right, w_img - 1)
+        bottom = min(bottom, h_img - 1)
+
+    return dlib.rectangle(left, top, right, bottom)''' 
+
 
 def run_inference_on_video_with_old_preprocess(
     model_name: str,
@@ -328,13 +442,220 @@ def run_inference_on_video_with_old_preprocess(
             overlay_path = os.path.join(gradcam_folder, f"gradcam_frame_{t:03d}.png")
             
             # Append per-frame details: frame index, probability, red percentage.
+            cv2.imwrite(overlay_path, overlay)
             per_frame_details.append((t, overlay_path, red_pct))
         
         # Optionally, return per_frame_details if needed.
         # For example:
         return prob, per_frame_details
 
+def run_inference_multiple_clips(
+    model_name: str,
+    video_path: str,
+    num_frames: int = 8,
+    num_clips: int = 4,  # Extract exactly 4 clips (4x8 = 32 frames total)
+    gradcam_aggregation: str = "mean",  # Options: "mean", "max", "last_frame"
+    cuda: bool = True,
+    manual_seed: int = None,
+):
+
+    # -------------------------------------------------
+    # 1) Load Model & Config
+    # -------------------------------------------------
+    model_configs = {
+        "altfreezing": {
+            "detector_path": "./training/config/detector/altfreezing.yaml",
+            "weights_path": "./training/weights/altfreezing_best.pth",
+        },
+    } 
+
+    if model_name not in model_configs:
+        raise ValueError(f"Invalid model_name '{model_name}'. Only 'altfreezing' supported.")
+
+    detector_path = model_configs[model_name]["detector_path"]
+    weights_path = model_configs[model_name]["weights_path"]
+    device = torch.device("cuda" if cuda and torch.cuda.is_available() else "cpu")
+
+    # Load YAML config
+    with open(detector_path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    if manual_seed is not None:
+        config['manualSeed'] = manual_seed
+        np.random.seed(manual_seed)
+        torch.manual_seed(manual_seed)
+        if cuda and torch.cuda.is_available():
+            torch.cuda.manual_seed_all(manual_seed)
+
+    # Instantiate Model
+    model_class = DETECTOR[config['model_name']]
+    model = model_class(config).to(device)
+    model.eval()
+
+    # Load Weights
+    ckpt = torch.load(weights_path, map_location=device)
+    model.load_state_dict(ckpt, strict=True)
+    print(f"Model loaded from: {weights_path}")
+
+    # -------------------------------------------------
+    # 2) Define Face Alignment Function
+    # -------------------------------------------------
+    face_detector = dlib.get_frontal_face_detector()
+    predictor_path = "./training/dataset/shape_predictor_81_face_landmarks.dat"
+    face_predictor = dlib.shape_predictor(predictor_path)
+
+    def align_and_preprocess_frame(img_rgb):
+        """
+        Detects, aligns, and processes face before passing to the model.
+        """
+        resolution = config['resolution']
+        mean = config['mean']
+        std = config['std']
+    
+        face, landmarks, mask = extract_aligned_face_dlib(face_detector, face_predictor, img_rgb, res=resolution)
+    
+        if face is None:
+            # If no face detected, resize whole image instead
+            aligned_img = cv2.resize(img_rgb, (resolution, resolution), interpolation=cv2.INTER_CUBIC)
+        else:
+            aligned_img = face  # Use aligned face
+    
+        pil_img = Image.fromarray(aligned_img)
+        tensor_no_norm = T.ToTensor()(pil_img)
+        tensor_norm = T.Normalize(mean, std)(tensor_no_norm.clone())
+        return tensor_norm, tensor_no_norm
+
+    # -------------------------------------------------
+    # 3) Read and Align Video Frames
+    # -------------------------------------------------
+    cap = cv2.VideoCapture(video_path)
+    frames_rgb = []
+
+    while cap.isOpened():
+        ret, frame_bgr = cap.read()
+        if not ret:
+            break
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        frames_rgb.append(frame_rgb)
+    cap.release()
+
+    if len(frames_rgb) == 0:
+        raise ValueError(f"No frames read from {video_path}")
+
+    # -------------------------------------------------
+    # Y) Extract 4 Non-Overlapping 8-Frame Clips
+    # -------------------------------------------------
+    num_total_frames = len(frames_rgb)
+    if num_total_frames < num_clips * num_frames:
+        raise ValueError(f"Video too short: {num_total_frames} frames, needs {num_clips * num_frames}")
+
+    clip_predictions = []
+    gradcam_overlays = []
+    red_percentages = []
+
+    clip_start_idxs = np.linspace(0, num_total_frames - num_frames, num_clips, dtype=int)
+
+    for clip_idx, start in enumerate(clip_start_idxs):
+        clip_frames = frames_rgb[start:start + num_frames]
+
+        # Preprocess Frames
+        all_frames_norm = []
+        all_frames_no_norm = []
+       # Correct: Uses face alignment before passing frames to the model
+        for frame_rgb in clip_frames:
+            norm, no_norm = align_and_preprocess_frame(frame_rgb)  # Face-aligned frames
+            all_frames_norm.append(norm)
+            all_frames_no_norm.append(no_norm)
+
+
+        # Stack Frames & Add Batch Dim
+        clip_tensor_norm = torch.stack(all_frames_norm, dim=0).unsqueeze(0).to(device)
+        clip_tensor_no_norm = torch.stack(all_frames_no_norm, dim=0).unsqueeze(0).to(device)
+        clip_tensor_norm = clip_tensor_norm.permute(0, 2, 1, 3, 4)  # Shape: [1, C, T, H, W]
+
+        data_dict = {'image': clip_tensor_norm}
+
+        # -------------------------------------------------
+        # 4) Run Inference on This Clip
+        # -------------------------------------------------
+        with torch.no_grad():
+            output_dict = model(data_dict, inference=True, gradcam_mode="framewise") 
+           #output_dict = model(data_dict, inference=True)
+            clip_prob = output_dict['prob'].detach().cpu().numpy()[0]
+
+        clip_predictions.append(clip_prob)
+
+        # -------------------------------------------------
+        # 5) Aggregate Grad-CAM for the Clip (One Overlay Per Clip)
+        # -------------------------------------------------
+        gradcam_tensor = output_dict.get("gradcam")  # Shape: (B, T, H, W)
+        gradcam_folder = "/scratch/ca2627/capstone/dlm-capstone/capstone_code/DeepfakeBench-main/gradcam_n/"
+        os.makedirs(gradcam_folder, exist_ok=True)
         
+        video_filename = os.path.splitext(os.path.basename(video_path))[0]
+        #create subfolder
+        video_gradcam_folder = os.path.join(gradcam_folder, video_filename)
+        os.makedirs(video_gradcam_folder, exist_ok=True)
+
+
+        if gradcam_tensor is not None:
+            gradcam_tensor = gradcam_tensor.squeeze(0).detach().cpu().numpy()  # Shape: (T, H, W)
+
+            # **Choose aggregation strategy**
+            if gradcam_aggregation == "mean":
+                heatmap_aggregated = np.mean(gradcam_tensor, axis=0)
+            elif gradcam_aggregation == "max":
+                heatmap_aggregated = np.max(gradcam_tensor, axis=0)
+            elif gradcam_aggregation == "last_frame":
+                heatmap_aggregated = gradcam_tensor[-1]
+            else:
+                raise ValueError(f"Invalid Grad-CAM aggregation mode: {gradcam_aggregation}")
+
+            # Resize heatmap & Normalize
+            heatmap_resized = cv2.resize(heatmap_aggregated, (config['resolution'], config['resolution']))
+            heatmap_norm = (heatmap_resized - heatmap_resized.min()) / (heatmap_resized.max() - heatmap_resized.min() + 1e-8)
+            heatmap_uint8 = np.uint8(255 * heatmap_norm)
+            heatmap_color = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
+
+            # Compute Red Percentage
+            def calculate_red_percentage(heatmap, red_threshold=150, non_red_threshold=100):
+                blue, green, red = cv2.split(heatmap)
+                red_mask = ((red >= red_threshold) & (blue <= non_red_threshold) & (green <= non_red_threshold))
+                return (np.sum(red_mask) / heatmap.size) * 100.0
+
+            red_pct = calculate_red_percentage(heatmap_color)
+            red_percentages.append(red_pct)
+
+            # Overlay on the first frame of the clip
+            frame_rgb = all_frames_no_norm[0].permute(1, 2, 0).cpu().numpy()
+            frame_uint8 = np.uint8(255 * frame_rgb)
+            frame_bgr = cv2.cvtColor(frame_uint8, cv2.COLOR_RGB2BGR)
+            
+            # Resize the original frame to the same dimensions as heatmap_color
+            frame_bgr = cv2.resize(frame_bgr, (config['resolution'], config['resolution']))
+            
+            overlay = cv2.addWeighted(frame_bgr, 0.6, heatmap_color, 0.4, 0)
+            overlay_path = os.path.join(video_gradcam_folder, f"gradcam_frame_{clip_idx:03d}.png")
+            cv2.imwrite(overlay_path, overlay)
+        
+            # Append a tuple: (clip index, overlay file path, red percentage)
+            gradcam_overlays.append((clip_idx, overlay_path, red_pct))
+
+    # -------------------------------------------------
+    # 6) Aggregate Predictions Across 4 Clips
+    # -------------------------------------------------
+    avg_prob = np.mean(clip_predictions)
+    final_prediction = 1 if avg_prob >= 0.5 else 0  
+
+
+    #  Delete to free memory
+    del clip_tensor_norm
+    del clip_tensor_no_norm
+    del data_dict
+    del output_dict
+    
+    return {"avg_prob": avg_prob, "final_prediction": final_prediction, "gradcam_overlays": gradcam_overlays} 
+
 
 def run_inference_on_images_with_old_preprocess(
     model_name: str,
@@ -567,44 +888,147 @@ def run_inference_on_images_with_old_preprocess_core(
 
 import argparse
 
+def is_valid_mp4(file_path):
+    """Check if an MP4 file exists and can be opened."""     
+    if not os.path.exists(file_path):
+        return False
+    cap = cv2.VideoCapture(file_path)
+    is_valid = cap.isOpened()
+    cap.release()
+    return is_valid
+
+def extract_base_filename(filename):
+    # Remove the '.mp4' extension if present.
+    if filename.endswith(".mp4"):
+        filename = filename[:-4]
+    # Return the first part before any underscore.
+    return filename.split("_")[0]
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run inference on images or video with a specified model.")
-    parser.add_argument("model_name", type=str, choices=["ucf", "xception", "spsl", "altfreezing"], 
+    parser = argparse.ArgumentParser(
+        description="Run inference on images or video with a specified model."
+    )
+    parser.add_argument("model_name", type=str,
+                        choices=["ucf", "xception", "spsl", "altfreezing"],
                         help="Name of the model to use for inference. Choices: 'ucf', 'xception', 'spsl', and 'altfreezing'.")
-    parser.add_argument("image_paths", nargs="+", type=str, 
-                        help="Paths to the images for inference. Provide one or more image paths.")
-    parser.add_argument("--video", action="store_true", help="If set, treat 'path' as a video file.") #if arg provided, treat path as video
+    # For images, image_paths is required; for video mode, these paths are ignored.
+    parser.add_argument("image_paths", nargs="*", type=str,
+                        help="Paths to the images for inference. Provide one or more image paths (ignored in video mode).")
+    parser.add_argument("--video", action="store_true",
+                        help="If set, treat input as video; paths will be loaded from the JSON file.")
     parser.add_argument("--num_frames", type=int, default=8)
     parser.add_argument("--frame_stride", type=int, default=3)
 
     args = parser.parse_args()
 
-   
     if args.video:
-        # Call the VIDEO function
-        video_path = args.image_paths[0]
-        result, frame_details = run_inference_on_video_with_old_preprocess(
-            model_name=args.model_name,
-            video_path=video_path,
-            num_frames=args.num_frames,
-            frame_stride=args.frame_stride,
-            cuda=True,
-            manual_seed=42,
-        )
-        print("Video Inference:", result)
-        threshold= 0.5  # Adjust threshold based on model calibration
-        decision = "detected" if result > threshold else "not detected"
-        explanation = f"Frequency model has **{decision}** signature forgery spacial and temporal with probability {result}."
-        print(explanation)
-        print(frame_details)
+        # If video paths are provided via command-line, use them.
+        if args.image_paths:
+            test_paths = args.image_paths
+            print("Using provided video path:")
+            print(test_paths)
+        else:
+            # ------------------------ Default JSON loading -------------------------
+            with open("training/FF-FS.json", "r") as f:
+                data = json.load(f)
+            
+            # Extract filenames from the FF-FS branch in JSON
+            #FF_Fsh_test_paths = list(data["FF-FS"]["FF-FS"]["test"]["c23"].keys())
+            #FF_Fsh_test_paths = list(data["Celeb-DF-v2"]["CelebDFv2_fake"]["test"].keys())
+            fake_paths = list(data["FF-FS"]["FF-FS"]["test"]["c23"].keys())
+            #real_paths = list(data["FF-FS"]["FF-real"]["test"]["c23"].keys())
+            
+            # Construct absolute file paths for videos
+            #all_test_paths = ["./training/Fsh_videos/FFpp_FSh/" + filename + ".mp4" for filename in FF_Fsh_test_paths]
+            #all_test_paths = ["./training/Celeb-DF-v2/Celeb-synthesis/" + filename + ".mp4" for filename in FF_Fsh_test_paths]
+            fake_video_paths = ["./training/FaceShifter/FFpp_FSh/" + f + ".mp4" for f in fake_paths]
+            #real_video_paths = ["./training/FaceShifter/FFpp_YT_originals/" + r + ".mp4" for r in real_paths]
 
-    else:
+            
+           # Function to check if an mp4 file is valid
+            def is_valid_mp4(file_path):
+                if not os.path.exists(file_path):  # Check if file exists
+                    return False
+                cap = cv2.VideoCapture(file_path)
+                is_valid = cap.isOpened()  # Check if video file can be opened
+                cap.release()
+                return is_valid
+            
+            
+            # Count for debugging
+            invalid_count = 0
+            valid_fake_paths = []
+
+            for path in fake_video_paths:
+                if is_valid_mp4(path):
+                    valid_fake_paths.append(path)
+                else:
+                    invalid_count += 1
+            
+            print("Total valid videos:", len(fake_video_paths))
+            print("Number of invalid videos:", invalid_count)
+
+            '''print("Extracted test paths before vlidation:", all_test_paths[:5])
+            
+            # Filter only valid mp4 files
+            test_paths = [path for path in all_test_paths if is_valid_mp4(path)]
+            print("Are there invalid videos? Answer:", len(all_test_paths) > len(test_paths))
+            print("Number of invalid videos:", len(all_test_paths) - len(test_paths))
+            print("Number of valid videos: ", len(test_paths))'''
+            
+            # ----------------------- End of JSON loading -----------------------------#
+
+       
+        total = 0
+        correct = 0
+
+        # Process each valid video
+        for video_path in valid_fake_paths:
+            result = run_inference_multiple_clips(
+                model_name=args.model_name,
+                video_path=video_path,
+                num_frames=args.num_frames,
+                num_clips=8,
+                gradcam_aggregation="mean",
+                cuda=True,
+                manual_seed=42,
+            )
+
+            print("\nInference result for video:", os.path.basename(video_path))
+            print(result)
+
+            # Construct the textual explanation
+            detection_status = "detected" if result["final_prediction"] == 1 else "not detected"
+            avg_prob_percentage = round(result["avg_prob"] * 100, 2)
         
-        test_paths = [[path] for path in args.image_paths]
-        Results = run_inference_on_images_with_old_preprocess(
-            model_name=args.model_name,
-            image_paths=test_paths,
-            cuda=True,
-            manual_seed=42,
-        )
-        print(Results)
+            # Identify the frame with the highest red percentage
+            highest_frame = max(result["gradcam_overlays"], key=lambda x: x[2])
+            highest_frame_number = highest_frame[0]
+            highest_red_percentage = round(highest_frame[2] * 100, 1)
+        
+            explanation = (
+                f"AltFreezing has {detection_status} spatial and temporal features in the video "
+                f"with an average probability of {avg_prob_percentage}%. The Grad-CAM analysis highlights frame {highest_frame_number}, "
+                f"which shows the highest activation with {highest_red_percentage}% red intensity."
+            )
+
+            print(explanation)
+
+            # assume all FF-FS videos are "fake", i.e. label = 1.
+            true_label = 1
+            predicted_label = result["final_prediction"]
+
+            # Update accuracy counters
+            if predicted_label == true_label:
+                correct += 1
+            total += 1
+
+        # After processing all videos, calculate accuracy
+        print("accuracy calculaton sgarted")
+        if total > 0:
+            accuracy = correct / total
+            print(f"\nAccuracy on {total} celeb v2 videos: {accuracy:.4f}")
+        else:
+            print("\nNo valid videos to calculate accuracy.")
+
+        
