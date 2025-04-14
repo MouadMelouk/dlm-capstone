@@ -419,6 +419,34 @@ class ResNet(nn.Module):
             self, cfg.MODEL.FC_INIT_STD, cfg.RESNET.ZERO_INIT_FINAL_BN
         )
 
+        # Grad-CAM feature & gradient storage (only for last layer)
+        self.feat_dict = {}
+        self.grad_dict = {}
+
+        # Register hooks only for s5
+        self.register_hooks("s5", self.s5)
+
+    def register_hooks(self, layer_name, layer_module):
+        """Register forward and backward hooks on a given layer."""
+        def forward_hook(module, input, output):
+            # If output is a list, stack it into a tensor
+            if isinstance(output, list):
+                output = torch.stack(output, dim=0)
+            self.feat_dict[layer_name] = output
+        def backward_hook(module, grad_input, grad_output):
+            # If grad_output[0] is a list, stack it into a tensor
+            if isinstance(grad_output[0], list):
+                grad_output = torch.stack(grad_output[0], dim=0)
+            else:
+                grad_output = grad_output[0]
+            self.grad_dict[layer_name] = grad_output
+        layer_module.register_forward_hook(forward_hook)
+        layer_module.register_backward_hook(backward_hook)
+
+
+    def get_layer_features_and_grads(self, layer_name):
+        return self.feat_dict.get(layer_name), self.grad_dict.get(layer_name)
+
     def _construct_network(self, cfg):
         """
         Builds a single pathway ResNet model.
