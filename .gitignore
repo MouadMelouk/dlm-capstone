@@ -1,0 +1,4 @@
+capstone_code/DeepfakeBench-main/training/weights/xception_best.pth
+capstone_code/DeepfakeBench-main/training/weights/ucf_best.pth
+capstone_code/DeepfakeBench-main/training/weights/spsl_best.pth
+FlowFormerPlusPlus/checkpoints/sintel.pth
