@@ -2,46 +2,83 @@ import cv2
 import os
 import uuid
 import json
+import time
 
 import os
 from supabase import create_client, Client
 
-def extract_k_frames(video_path, k):
+import subprocess
+
+def extract_k_frames(video_path, k,
+                     save_dir="/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/"):
     """
-    Extracts k equally spaced frames from a video and returns a list of tuples.
-    Each tuple contains:
-       (original_frame_index, saved_image_file_path)
+    Extracts k equally-spaced frames from an MP4, returning a list of
+    (approx_frame_index, saved_image_path) tuples.
+
+    This implementation:
+      1. Opens the video with cv2.VideoCapture.
+      2. Reads CAP_PROP_FRAME_COUNT; if that fails, reads through once to count frames.
+      3. Computes k target indices.
+      4. Reads frames sequentially and only writes out when the current index
+         matches one of the targets (no cap.set() calls!).
     """
-    save_dir = "/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/"
     os.makedirs(save_dir, exist_ok=True)
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Could not open video file: {video_path}")
 
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if frame_count < k:
+    # 1) Try to get total frame count
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total <= 0:
+        # Fallback: iterate once to count
+        total = 0
+        while True:
+            ret, _ = cap.read()
+            if not ret:
+                break
+            total += 1
         cap.release()
-        raise ValueError(f"Video has only {frame_count} frames, but {k} are required.")
+        cap = cv2.VideoCapture(video_path)
 
-    # Compute k equally spaced frame indices.
-    frame_indices = [int(i * frame_count / k) for i in range(k)]
-    saved_frames = []
+    if total < k:
+        cap.release()
+        raise ValueError(f"Video has only {total} frames, but {k} were requested.")
 
-    for idx in frame_indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+    # 2) Compute equally-spaced frame indices
+    #    (last index will be floor((k-1)*total/k))
+    targets = { int(i * total / k) for i in range(k) }
+
+    saved = []
+    idx = 0
+
+    # 3) Read sequentially, save on hits
+    while True:
         ret, frame = cap.read()
         if not ret:
-            cap.release()
-            raise ValueError(f"Failed to read frame at index {idx}")
+            break
 
-        filename = f"{uuid.uuid4().hex}.png"
-        file_path = os.path.join(save_dir, filename)
-        cv2.imwrite(file_path, frame)
-        saved_frames.append((idx, file_path))
+        if idx in targets:
+            fname = f"{uuid.uuid4().hex}.png"
+            path = os.path.join(save_dir, fname)
+            # write PNG (lossless) or change to .jpg/.q:v if you prefer
+            cv2.imwrite(path, frame)
+            saved.append((idx, path))
+            targets.remove(idx)
+            if not targets:
+                break
+
+        idx += 1
 
     cap.release()
-    return saved_frames
+
+    if targets:
+        # should never happen, but just in case
+        missing = sorted(targets)
+        raise RuntimeError(f"Failed to extract frames at indices: {missing}")
+
+    return saved
+
 
 def parse_llm_response(response_str):
     """
