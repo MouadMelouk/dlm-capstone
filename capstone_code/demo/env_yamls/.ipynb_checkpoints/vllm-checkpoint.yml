@@ -1,0 +1,10 @@
+name: vllm
+channels:
+  - conda-forge
+  - nvidia
+  - rapidsai
+  - defaults
+dependencies:
+  - python=3.10
+  - ipykernel
+prefix: /home/mmm9912/miniconda3/envs/vllm

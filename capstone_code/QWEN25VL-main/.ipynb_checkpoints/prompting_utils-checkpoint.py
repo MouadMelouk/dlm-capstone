@@ -9,6 +9,10 @@ from supabase import create_client, Client
 
 import subprocess
 
+import shlex
+import ast
+
+# REPLACE THIS: save_dir
 def extract_k_frames(video_path, k,
                      save_dir="/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/"):
     """
@@ -28,7 +32,7 @@ def extract_k_frames(video_path, k,
     if not cap.isOpened():
         raise ValueError(f"Could not open video file: {video_path}")
 
-    # 1) Try to get total frame count
+    # get total frame count
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if total <= 0:
         # Fallback: iterate once to count
@@ -45,14 +49,14 @@ def extract_k_frames(video_path, k,
         cap.release()
         raise ValueError(f"Video has only {total} frames, but {k} were requested.")
 
-    # 2) Compute equally-spaced frame indices
+    # compute equally-spaced frame indices
     #    (last index will be floor((k-1)*total/k))
     targets = { int(i * total / k) for i in range(k) }
 
     saved = []
     idx = 0
 
-    # 3) Read sequentially, save on hits
+    # read sequentially, save on hits
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -122,35 +126,6 @@ def parse_llm_response(response_str):
         raise ValueError("Invalid JSON response from LLM")
 
 
-def PLACEHOLDERwrapped_run_inference_on_images_with_old_preprocess(model_name, image_paths, cuda, manual_seed):
-    """
-    PLACEHOLDER function call to run inference on images using expert DL models.
-    In prod, this function would run the deepfake detection models.
-    
-    Parameters:
-        model_name (str): One of "spsl", "ucf", or "xception".
-        image_paths (list): List of image paths.
-        cuda (bool): Whether to use CUDA.
-        manual_seed (int): Seed for reproducibility.
-    
-    Returns:
-        list: A list of tuples, each tuple containing:
-            - overlay_path (str): Path to the Grad-CAM overlay image.
-            - confidence (float): Softmax probability that the image is forged.
-            - prediction_message (str): Verdict message from the model.
-            - red_percentage (float): Percentage of red pixels in the Grad-CAM heatmap.
-    """
-    overlay_path = "/scratch/mmm9912/Capstone/FRONT_END_STORAGE/images/ca4227e5f59643179b25ba59c0483b9b.png"
-    confidence = 0.75
-    prediction_message = f"{model_name.upper()} model detected forgery."
-    red_percentage = 10.0
-
-    return [(overlay_path, confidence, prediction_message, red_percentage) for _ in image_paths]
-
-import subprocess
-import shlex
-import ast
-
 def wrapped_run_inference_on_images_with_old_preprocess(model_name, image_paths, cuda, manual_seed):
     """
     Runs inference on images by calling an external deepfake detection script.
@@ -172,6 +147,7 @@ def wrapped_run_inference_on_images_with_old_preprocess(model_name, image_paths,
         RuntimeError: If the external command fails.
         ValueError: If the output cannot be parsed.
     """
+    # REPLACE THIS
     work_dir = "/scratch/mmm9912/Capstone/dlm-repo/capstone_code/DeepfakeBench-main/training"
 
     # Convert image paths to properly escaped arguments
@@ -311,11 +287,6 @@ def handle_llm_response(response_str):
     # Otherwise, return the direct answer
     return parsed_response["direct_answer"]
 
-# Example usage:
-#llm_response = '{\n  "direct_answer_to_frontend": "",\n  "consult_expert_model": {\n    "expert_model_name": "ucf",\n    "video_path": "/scratch/mmm9912/Capstone/FRONT_END_STORAGE/videos/8be0d76e-3dba-4970-9e85-49122ca690c8.mp4",\n    "number_of_frames": 4\n  }\n}'
-
-#result = handle_llm_response(llm_response)
-#print(result)
 
 def format_user_or_assistant_message(role, prompt):
     # role: "assistant" or "user"
@@ -328,22 +299,12 @@ def format_user_or_assistant_message(role, prompt):
         }, indent=2)
     }
 
-#text = "Well, yeah, but what exactly do you do? What is the range of your possibilities?"
-#formatted_message = format_user_or_assistant_message(text)
-#print(formatted_message)
-
-
 def format_expert_message(expert_feedback):
     return {
         "role": "system",
         "content": expert_feedback
     }
 
-#text = "Well, yeah, but what exactly do you do? What is the range of your possibilities?"
-#formatted_message = format_expert_message(text)
-#print(formatted_message)
-
-# Import the required functions from the supabase_wrapper module.
 # These functions interact with the online database.
 
 def get_latest_message_info():
@@ -387,7 +348,6 @@ def send_message(conversation_id, role, content, media_url=None, media_type=None
     Returns:
       None. This function performs the insertion as a side effect.
     """
-    # Insert the new message into the database.
     insert_message(
         conversation_id=conversation_id,
         role=role,
@@ -399,8 +359,9 @@ def send_message(conversation_id, role, content, media_url=None, media_type=None
 # ------------------------------
 
 def get_all_messages():
-    SUPABASE_URL = "https://yjmsjtzfsggofmvraypd.supabase.co"
-    SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlqbXNqdHpmc2dnb2ZtdnJheXBkIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczODE2MzU4MywiZXhwIjoyMDUzNzM5NTgzfQ.281ZlrBrOS1AawSGkPFlDK22UqbDbp4yBGUJqHjIaJQ"
+    # REPLACE THIS
+    SUPABASE_URL = "your_supabase_project_url"
+    SUPABASE_SERVICE_ROLE_KEY = "your_supabase_service_role_key"
     
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
     
@@ -409,8 +370,9 @@ def get_all_messages():
     return response.data
 
 def create_conversation(title):
-    SUPABASE_URL = "https://yjmsjtzfsggofmvraypd.supabase.co"
-    SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlqbXNqdHpmc2dnb2ZtdnJheXBkIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczODE2MzU4MywiZXhwIjoyMDUzNzM5NTgzfQ.281ZlrBrOS1AawSGkPFlDK22UqbDbp4yBGUJqHjIaJQ"
+    # REPLACE THIS
+    SUPABASE_URL = "your_supabase_project_url"
+    SUPABASE_SERVICE_ROLE_KEY = "your_supabase_service_role_key"
     
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
@@ -418,8 +380,9 @@ def create_conversation(title):
     return response.data
 
 def insert_message(conversation_id, content, role, media_url=None, media_type=None):
-    SUPABASE_URL = "https://yjmsjtzfsggofmvraypd.supabase.co"
-    SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlqbXNqdHpmc2dnb2ZtdnJheXBkIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczODE2MzU4MywiZXhwIjoyMDUzNzM5NTgzfQ.281ZlrBrOS1AawSGkPFlDK22UqbDbp4yBGUJqHjIaJQ"
+    # REPLACE THIS
+    SUPABASE_URL = "your_supabase_project_url"
+    SUPABASE_SERVICE_ROLE_KEY = "your_supabase_service_role_key"
     
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 

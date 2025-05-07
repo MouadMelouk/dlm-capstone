@@ -1,0 +1,23 @@
+# minimal Conda-enabled base
+FROM continuumio/miniconda3:latest
+
+# Set workdir (where we'll copy in your yml files)
+WORKDIR /opt/envs
+
+# 3) Copy your exported environment specs into the image
+COPY vllm.yml deepfakebench.yml ./
+
+# 4) Use bash for proper conda activation behavior
+SHELL ["/bin/bash", "-lc"]
+
+# 5) (Optional) Install mamba for faster solves, then create both envs
+RUN conda install -y -c conda-forge mamba && \
+    mamba env create -f vllm.yml && \
+    mamba env create -f deepfakebench.yml && \
+    conda clean -afy
+
+# 6) (Optional) Make vllm activate by default on container start
+RUN echo "conda activate vllm" >> ~/.bashrc
+
+# 7) Default to an interactive shell
+CMD ["bash"]

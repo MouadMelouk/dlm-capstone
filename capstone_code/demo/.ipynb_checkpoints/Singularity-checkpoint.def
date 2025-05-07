@@ -1,0 +1,76 @@
+Bootstrap: docker
+From: continuumio/miniconda3:latest
+
+%labels
+    Author  Mouad Melouk
+    Version 1.0
+
+%environment
+    # make sure conda is on the PATH
+    export PATH=/opt/conda/bin:$PATH
+
+%post
+    # create a place for your specs
+    mkdir -p /opt/envs
+
+    # ───── vllm.yml ─────
+    cat > /opt/envs/vllm.yml << 'EOF'
+name: vllm
+channels:
+  - conda-forge
+  - nvidia
+  - rapidsai
+  - defaults
+dependencies:
+  - python=3.10
+  - ipykernel
+prefix: /opt/conda/envs/vllm
+EOF
+
+    # ── deepfakebench.yml ──
+    cat > /opt/envs/deepfakebench.yml << 'EOF'
+name: DeepfakeBench
+channels:
+  - conda-forge
+  - nvidia
+  - rapidsai
+  - defaults
+dependencies:
+  - python==3.7.12
+  - numpy==1.21.5
+  - pandas==1.3.5
+  - pillow==8.4.0
+  - dlib==19.24.0
+  - imageio==2.9.0
+  - imgaug==0.4.0
+  - tqdm==4.61.0
+  - seaborn==0.11.2
+  - imutils==0.5.4
+  - scikit-image==0.19.2
+  - scikit-learn==1.0.2
+  - opencv
+  - ipykernel
+  - tensorflow
+  - libstdcxx-ng
+  - torchmetrics
+  - hydra-core
+  - pytorch-lightning
+  - conda-libmamba-solver
+  - cudatoolkit=11.3
+  - pytorch
+  - torchaudio
+  - torchvision
+prefix: /opt/conda/envs/DeepfakeBench
+EOF
+
+    # install mamba & build both envs
+    conda install -y -c conda-forge mamba
+    mamba env create -f /opt/envs/vllm.yml
+    mamba env create -f /opt/envs/deepfakebench.yml
+    conda clean -afy
+
+    # default to vllm on shell start
+    echo "source /opt/conda/etc/profile.d/conda.sh && conda activate vllm" >> /environment
+
+%runscript
+    exec /bin/bash "$@"
