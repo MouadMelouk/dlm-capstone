@@ -42,18 +42,6 @@ python3 training/test.py --detector_path ./training/config/detector/spsl.yaml --
 
 
 
-
-
-cd /scratch/mh6117/MLLM_CS_AIGC_data/
-singularity shell instance://FlowFormerPlusPlusVM
-cd /scratch/mmm9912/Capstone/DeepfakeBench
-conda activate DeepfakeBench
-clear
-
-
-
-
-
 python training/train.py --detector_path ./training/config/detector/xception.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_xception_frames_pairstride1_srcstride16.log
 
 python training/train.py --detector_path ./training/config/detector/spsl.yaml &> /scratch/mmm9912/Capstone/DeepfakeBench/terminal_logs/train_log_spsl_frames_pairstride1_srcstride16.log
