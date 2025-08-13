@@ -1,6 +1,1 @@
-conda activate /scratch/mmm9912/condaDONOTDELETE/qwen25vl
-export HF_HOME="/scratch/mmm9912/hf_cache"
-export HF_DATASETS_CACHE="/scratch/mmm9912/hf_cache/datasets"
-export TRANSFORMERS_CACHE="/scratch/mmm9912/hf_cache/transformers"
-export XDG_CACHE_HOME="/scratch/mmm9912/hf_cache"
-clear
+
